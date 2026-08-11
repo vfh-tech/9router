@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
+import path from "node:path";
 import { getSettings, updateSettings } from "@/lib/localDb";
 import { applyOutboundProxyEnv } from "@/lib/network/outboundProxy";
+import { DATA_DIR } from "@/lib/dataDir.js";
 import { resetComboRotation } from "open-sse/services/combo.js";
 import bcrypt from "bcryptjs";
 
@@ -23,11 +25,12 @@ export async function GET() {
     const enableRequestLogs = process.env.ENABLE_REQUEST_LOGS === "true";
     const enableTranslator = process.env.ENABLE_TRANSLATOR === "true";
     
-    return NextResponse.json({ 
-      ...safeSettings, 
+    return NextResponse.json({
+      ...safeSettings,
       enableRequestLogs,
       enableTranslator,
-      hasPassword: !!password
+      hasPassword: !!password,
+      dbPath: path.join(DATA_DIR, "db", "data.sqlite")
     }, { headers: SETTINGS_RESPONSE_HEADERS });
   } catch (error) {
     console.log("Error getting settings:", error);
