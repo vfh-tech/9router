@@ -12,7 +12,10 @@ const WINDOWS = [
   { id: "last30d", label: "30d" }, { id: "all", label: "All" },
 ];
 const SAVER_COLORS = { rtk: "#10b981", headroom: "#3b82f6", caveman: "#f59e0b", ponytail: "#8b5cf6", pxpipe: "#ef4444" };
-const fmtTokens = (n) => (n >= 1e6 ? `${(+n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(+n / 1e3).toFixed(1)}k` : `${n}`);
+const fmtTokens = (n) => {
+  const v = Number(n) || 0;
+  return v >= 1e6 ? `${(v / 1e6).toFixed(1)}M` : v >= 1e3 ? `${(v / 1e3).toFixed(1)}k` : `${v}`;
+};
 
 export default function TokenSaverStatsClient() {
   const [stats, setStats] = useState(null);
@@ -122,8 +125,8 @@ export default function TokenSaverStatsClient() {
                 <tr key={`${ev.ts}-${i}`} className="border-b border-border/50">
                   <td className="py-1.5 pr-3 whitespace-nowrap text-text-muted">{new Date(ev.ts).toLocaleString()}</td>
                   <td className="py-1.5 pr-3"><span className="text-xs px-2 py-0.5 rounded" style={{ background: `${SAVER_COLORS[ev.saver] || "#94a3b8"}22`, color: SAVER_COLORS[ev.saver] || "#94a3b8" }}>{ev.saver}</span></td>
-                  <td className="py-1.5 pr-3 font-mono text-xs">{ev.provider ? `${ev.provider}/${ev.model || ""}` : "—"}</td>
-                  <td className="py-1.5 pr-3 text-right font-mono text-xs text-success">{ev.applied ? fmtTokens(ev.savedTokens || ev.tokensSaved) : "—"}</td>
+                  <td className="py-1.5 pr-3 font-mono text-xs">{ev.provider ? (ev.model ? `${ev.provider}/${ev.model}` : ev.provider) : "—"}</td>
+                  <td className="py-1.5 pr-3 text-right font-mono text-xs text-success">{ev.applied && (ev.savedTokens || ev.tokensSaved) ? fmtTokens(ev.savedTokens || ev.tokensSaved) : "—"}</td>
                   <td className="py-1.5 pr-3 text-right font-mono text-xs">{ev.applied && ev.savedPct ? `${ev.savedPct}%` : "—"}</td>
                   <td className="py-1.5"><span className={`text-xs px-2 py-0.5 rounded ${ev.applied ? "bg-success/15 text-success" : "bg-warning/15 text-warning"}`}>{ev.applied ? "Saved" : ev.reason || "Skipped"}</span></td>
                 </tr>
