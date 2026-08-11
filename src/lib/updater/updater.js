@@ -26,7 +26,7 @@ function getDataDir() {
   if (process.platform === "win32") {
     return path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "9router");
   }
-  return path.join(os.homedir(), ".9router");
+  return path.join(os.homedir(), ".9router-vfh");
 }
 const updateDir = path.join(getDataDir(), "update");
 try { fs.mkdirSync(updateDir, { recursive: true }); } catch { /* best effort */ }
