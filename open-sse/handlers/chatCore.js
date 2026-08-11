@@ -57,7 +57,7 @@ export function stripContinuityFields(body) {
   return body;
 }
 
-export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking }) {
+export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, onTokenSaverEvent, sourceFormatOverride, providerThinking }) {
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
   // Stable per-session color so all lines of one CLI conversation share a tag
@@ -228,10 +228,14 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // Per-request opt-out: client can bypass all token savers via header
   const tokenSaverEnabled = clientRawRequest?.headers?.[TOKEN_SAVER_HEADER]?.toLowerCase() !== "off";
 
+  // Token-saver stats emitter — fire-and-forget, never breaks the request path.
+  const emit = (ev) => { try { onTokenSaverEvent?.({ provider, model, connectionId, ts: Date.now(), ...ev }); } catch { /* ignore */ } };
+
   // RTK: compress tool_result content
   const rtkStats = compressMessages(translatedBody, tokenSaverEnabled && rtkEnabled);
   const rtkLine = formatRtkLog(rtkStats);
   if (rtkLine) console.log(rtkLine);
+  if (rtkStats?.hits?.length) emit({ saver: "rtk", applied: true, filters: rtkStats.hits.map((h) => h.filter), hits: rtkStats.hits.length, savedTokens: Math.round((rtkStats.bytesBefore - rtkStats.bytesAfter) / 4) });
 
   // Headroom: optional external proxy compression; fail open if proxy is absent.
   const headroomDiagnostics = {};
@@ -245,6 +249,8 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     }
   } else if (tokenSaverEnabled && headroomEnabled) log?.warn?.("HEADROOM", `skipped: ${headroomDiagnostics.reason || "compression unavailable"}${headroomDiagnostics.endpoint ? ` (${headroomDiagnostics.endpoint})` : ""}`);
 
+  if (headroomStats) emit({ saver: "headroom", applied: headroomStats.applied || false, reason: headroomStats.reason || null, tokensBefore: headroomStats.tokensBeforeEst || 0, tokensAfter: headroomStats.tokensAfterEst || 0, savedTokens: headroomStats.tokensSavedEst || 0, savedPct: headroomStats.savedPct || 0 });
+
   // Token-saver flags accumulator for the single "⚙" log line below.
   const xf = [];
 
@@ -252,12 +258,14 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   if (tokenSaverEnabled && cavemanEnabled && cavemanLevel) {
     injectCaveman(translatedBody, finalFormat, cavemanLevel);
     xf.push(`CAVEMAN:${cavemanLevel}`);
+    emit({ saver: "caveman", applied: true, level: cavemanLevel });
   }
 
   // Ponytail: inject lazy-senior-dev system prompt
   if (tokenSaverEnabled && ponytailEnabled && ponytailLevel) {
     injectPonytail(translatedBody, finalFormat, ponytailLevel);
     xf.push(`PONYTAIL:${ponytailLevel}`);
+    emit({ saver: "ponytail", applied: true, level: ponytailLevel });
   }
 
   // PXPIPE: image bulky context (Claude-format bodies only), last saver before dispatch
@@ -271,6 +279,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     if (pxpipeResult.body) translatedBody = pxpipeResult.body;
     if (pxpipeSummary?.applied) xf.push(`PXPIPE:${pxpipeSummary.imageCount}img`);
     try { onPxpipeEvent?.({ provider, model, ...pxpipeSummary }); } catch { /* stats must not break requests */ }
+    if (pxpipeSummary) emit({ saver: "pxpipe", applied: pxpipeSummary.applied || false, reason: pxpipeSummary.reason || null, tokensBefore: pxpipeSummary.tokensBeforeEst || 0, tokensAfter: pxpipeSummary.tokensAfterEst || 0, savedTokens: pxpipeSummary.tokensSavedEst || 0, savedPct: pxpipeSummary.savedPct || 0, imageCount: pxpipeSummary.imageCount || 0, durationMs: pxpipeSummary.durationMs || 0 });
   }
 
   if (xf.length && log?.line) log.line(reqTag, "⚙", xf.join(" · "));
