@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { Card, Button, Input, Modal, Toggle, ConfirmModal } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { getCurrentLocale, onLocaleChange } from "@/i18n/runtime";
+import TokenSaverStatsClient from "./stats/TokenSaverStatsClient";
 import {
   WENYAN_LOCALES,
   CAVEMAN_LEVELS,
@@ -11,6 +12,7 @@ import {
 } from "../endpoint/endpointConstants";
 
 export default function TokenSaverClient() {
+  const [view, setView] = useState("settings");
   const [rtkEnabled, setRtkEnabledState] = useState(true);
   const [headroomEnabled, setHeadroomEnabled] = useState(false);
   const [headroomUrl, setHeadroomUrl] = useState("http://localhost:8787");
@@ -466,6 +468,18 @@ export default function TokenSaverClient() {
 
   return (
     <div className="space-y-6 p-6">
+      <div className="flex items-center gap-1 rounded-lg border border-border bg-bg-subtle p-1 w-fit">
+        {[{ id: "settings", label: "Settings" }, { id: "stats", label: "Stats" }].map((tab) => (
+          <button key={tab.id} onClick={() => setView(tab.id)}
+            className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${view === tab.id ? "bg-primary text-white shadow-sm" : "text-text-muted hover:text-text hover:bg-bg-hover"}`}>
+            {tab.label}
+          </button>
+        ))}
+      </div>
+      {view === "stats" ? (
+        <TokenSaverStatsClient />
+      ) : (
+      <>
       <Card id="rtk">
         <div className="flex items-center justify-between mb-2">
           <h2 className="text-lg font-semibold flex items-center gap-2">
@@ -1010,6 +1024,8 @@ export default function TokenSaverClient() {
         confirmText={extrasConfirm?.confirmText}
         variant={extrasConfirm?.variant}
       />
+      </>
+      )}
     </div>
   );
 }
