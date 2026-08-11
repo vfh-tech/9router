@@ -19,7 +19,9 @@ export async function createSqlJsAdapter(filePath) {
 
   let dirty = false;
   let saveTimer = null;
-  const SAVE_DEBOUNCE_MS = 100;
+  // Full db.export() + writeFileSync per flush — coalesce bursts, not per write.
+  // ponytail: ceiling is burst-size I/O; upgrade path = persist-on-interval + size check (or swap to a WAL-capable driver).
+  const SAVE_DEBOUNCE_MS = 2000;
 
   function persist() {
     const data = db.export();

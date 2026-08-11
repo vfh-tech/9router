@@ -46,6 +46,41 @@ export class CommandCodeExecutor extends BaseExecutor {
     return result;
   }
 
+  /**
+   * CommandCode has no public usage REST endpoint. When a plan window or
+   * monthly pool is exhausted it errors with a message naming the reset, e.g.
+   *   "You've reached your 5-hour usage limit. Resets in 2h 41m (3:00 PM)."
+   *   "...full credit allocation for your current billing period."
+   * Parse that reset as the retry wait so the caller surfaces the real reset
+   * time instead of a fixed backoff. Returns null when no reset is named
+   * (fall back to default retry), false when the message is a hard limit
+   * (do not transparently retry through the window).
+   */
+  async computeRetryDelay(response, attempt, defaultDelayMs) {
+    if (response.status !== 429) return null;
+
+    let bodyText = "";
+    try {
+      bodyText = await response.clone().text();
+    } catch {
+      return null;
+    }
+
+    const match = bodyText.match(/Resets in (\d+h)?\s*(\d+m)?(?:\s*\([^)]*\))?/i)
+      || bodyText.match(/billing period/i);
+    if (!match) return null;
+
+    if (match[0] && /billing period/i.test(match[0])) {
+      // Monthly pool exhausted — retrying within the window never helps.
+      return false;
+    }
+
+    let totalMs = 0;
+    if (match[1]) totalMs += parseInt(match[1]) * 3600 * 1000;
+    if (match[2]) totalMs += parseInt(match[2]) * 60 * 1000;
+    return totalMs > 0 ? Math.min(totalMs, 6 * 3600 * 1000) : null;
+  }
+
   parseError(response, bodyText) {
     let parsed = null;
     try {
@@ -56,9 +91,22 @@ export class CommandCodeExecutor extends BaseExecutor {
     const errObj = parsed?.error || parsed;
     const msg = errObj?.message || parsed?.message || bodyText || response.statusText;
     const status = Number(errObj?.code || errObj?.statusCode || response.status) || response.status;
+    // 429 body names the reset window ("Resets in 2h 41m"); expose the exact
+    // reset epoch so quota tracking can surface it instead of a fixed cooldown.
+    let resetsAtMs;
+    if (status === 429 && msg) {
+      const match = msg.match(/Resets in (\d+h)?\s*(\d+m)?/i);
+      if (match) {
+        let totalMs = 0;
+        if (match[1]) totalMs += parseInt(match[1]) * 3600 * 1000;
+        if (match[2]) totalMs += parseInt(match[2]) * 60 * 1000;
+        if (totalMs > 0) resetsAtMs = Date.now() + totalMs;
+      }
+    }
     return {
       status,
       message: msg || `CommandCode upstream error: ${response.status}`,
+      ...(resetsAtMs ? { resetsAtMs } : {}),
     };
   }
 }

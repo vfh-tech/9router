@@ -75,7 +75,10 @@ async function initAdapter() {
 
 export async function getAdapter() {
   if (state.instance) return state.instance;
-  if (!state.initPromise) state.initPromise = initAdapter().then((a) => { state.instance = a; return a; });
+  if (!state.initPromise) {
+    state.initPromise = initAdapter().then((a) => { state.instance = a; return a; })
+      .catch((e) => { state.initPromise = null; throw e; }); // allow retry on next call
+  }
   return state.initPromise;
 }
 

@@ -272,7 +272,9 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     lastError: reason,
     errorCode: status,
     lastErrorAt: new Date().toISOString(),
-    backoffLevel: newBackoffLevel ?? backoffLevel
+    backoffLevel: newBackoffLevel ?? backoffLevel,
+    // Precise provider reset (e.g. codex/commandcode resets_at) → quota tracker
+    ...(resetsAtMs && resetsAtMs > Date.now() ? { rateLimitedUntil: new Date(resetsAtMs).toISOString() } : {}),
   });
 
   const lockKey = Object.keys(lockUpdate)[0];
@@ -329,7 +331,8 @@ export async function clearAccountError(connectionId, currentConnection, model =
       lastError: null,
       errorCode: null,
       lastErrorAt: null,
-      backoffLevel: 0
+      backoffLevel: 0,
+      rateLimitedUntil: null
     });
   }
 

@@ -72,23 +72,39 @@ export async function exportDb() {
   const db = await getAdapter();
   const { exportSettings } = await import("./repos/settingsRepo.js");
 
+  // Single transaction read — same pattern as importDb(), so the snapshot isn't torn by interleaved writes.
+  const raw = db.transaction(() => {
+    const read = (sql) => db.all(sql);
+    return {
+      providerConnections: read(`SELECT * FROM providerConnections`),
+      providerNodes: read(`SELECT * FROM providerNodes`),
+      proxyPools: read(`SELECT * FROM proxyPools`),
+      apiKeys: read(`SELECT * FROM apiKeys`),
+      combos: read(`SELECT * FROM combos`),
+      modelAliases: read(`SELECT key, value FROM kv WHERE scope = 'modelAliases'`),
+      customModels: read(`SELECT key, value FROM kv WHERE scope = 'customModels'`),
+      mitmAlias: read(`SELECT key, value FROM kv WHERE scope = 'mitmAlias'`),
+      pricing: read(`SELECT key, value FROM kv WHERE scope = 'pricing'`),
+    };
+  })();
+
   const out = {
     settings: await exportSettings(),
-    providerConnections: db.all(`SELECT * FROM providerConnections`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, provider: r.provider, authType: r.authType, name: r.name, email: r.email, priority: r.priority, isActive: r.isActive === 1, createdAt: r.createdAt, updatedAt: r.updatedAt })),
-    providerNodes: db.all(`SELECT * FROM providerNodes`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, type: r.type, name: r.name, createdAt: r.createdAt, updatedAt: r.updatedAt })),
-    proxyPools: db.all(`SELECT * FROM proxyPools`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, isActive: r.isActive === 1, testStatus: r.testStatus, createdAt: r.createdAt, updatedAt: r.updatedAt })),
-    apiKeys: db.all(`SELECT * FROM apiKeys`).map((r) => ({ id: r.id, key: r.key, name: r.name, machineId: r.machineId, isActive: r.isActive === 1, createdAt: r.createdAt })),
-    combos: db.all(`SELECT * FROM combos`).map((r) => ({ id: r.id, name: r.name, kind: r.kind, models: parseJson(r.models, []), createdAt: r.createdAt, updatedAt: r.updatedAt })),
+    providerConnections: raw.providerConnections.map((r) => ({ ...parseJson(r.data, {}), id: r.id, provider: r.provider, authType: r.authType, name: r.name, email: r.email, priority: r.priority, isActive: r.isActive === 1, createdAt: r.createdAt, updatedAt: r.updatedAt })),
+    providerNodes: raw.providerNodes.map((r) => ({ ...parseJson(r.data, {}), id: r.id, type: r.type, name: r.name, createdAt: r.createdAt, updatedAt: r.updatedAt })),
+    proxyPools: raw.proxyPools.map((r) => ({ ...parseJson(r.data, {}), id: r.id, isActive: r.isActive === 1, testStatus: r.testStatus, createdAt: r.createdAt, updatedAt: r.updatedAt })),
+    apiKeys: raw.apiKeys.map((r) => ({ id: r.id, key: r.key, name: r.name, machineId: r.machineId, isActive: r.isActive === 1, createdAt: r.createdAt })),
+    combos: raw.combos.map((r) => ({ id: r.id, name: r.name, kind: r.kind, models: parseJson(r.models, []), createdAt: r.createdAt, updatedAt: r.updatedAt })),
     modelAliases: {},
     customModels: [],
     mitmAlias: {},
     pricing: {},
   };
 
-  for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'modelAliases'`)) out.modelAliases[r.key] = parseJson(r.value);
-  for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'customModels'`)) out.customModels.push(parseJson(r.value));
-  for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'mitmAlias'`)) out.mitmAlias[r.key] = parseJson(r.value);
-  for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'pricing'`)) out.pricing[r.key] = parseJson(r.value);
+  for (const r of raw.modelAliases) out.modelAliases[r.key] = parseJson(r.value);
+  for (const r of raw.customModels) out.customModels.push(parseJson(r.value));
+  for (const r of raw.mitmAlias) out.mitmAlias[r.key] = parseJson(r.value);
+  for (const r of raw.pricing) out.pricing[r.key] = parseJson(r.value);
 
   return out;
 }

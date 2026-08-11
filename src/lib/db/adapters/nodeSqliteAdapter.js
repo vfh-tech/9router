@@ -7,6 +7,7 @@ const CHECKPOINT_INTERVAL_MS = 60 * 1000;
 export async function createNodeSqliteAdapter(filePath) {
   // Suppress "ExperimentalWarning: SQLite is an experimental feature" from node:sqlite.
   // Stable enough for production use as of Node 22.x (RC quality).
+  // Patch is temporary — only held while the import triggers the warning, then restored.
   const origEmit = process.emit;
   process.emit = function (name, data, ...rest) {
     if (name === "warning" && data?.name === "ExperimentalWarning" && /SQLite/i.test(data.message || "")) {
@@ -15,8 +16,13 @@ export async function createNodeSqliteAdapter(filePath) {
     return origEmit.call(process, name, data, ...rest);
   };
 
-  // Dynamic import — fails on Node < 22.5 → driver.js falls back to sql.js
-  const sqlite = await import("node:sqlite");
+  let sqlite;
+  try {
+    // Dynamic import — fails on Node < 22.5 → driver.js falls back to sql.js
+    sqlite = await import("node:sqlite");
+  } finally {
+    process.emit = origEmit;
+  }
   const Database = sqlite.DatabaseSync;
   const db = new Database(filePath);
 
