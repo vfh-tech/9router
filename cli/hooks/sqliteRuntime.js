@@ -12,8 +12,8 @@ const SQL_JS_VERSION = "1.14.1";
 function getDataDir() {
   if (process.env.DATA_DIR) return process.env.DATA_DIR;
   return process.platform === "win32"
-    ? path.join(process.env.APPDATA || os.homedir(), "9router")
-    : path.join(os.homedir(), ".9router");
+    ? path.join(process.env.APPDATA || os.homedir(), "9router-vfh")
+    : path.join(os.homedir(), ".9router-vfh");
 }
 
 function getRuntimeDir() {

@@ -27,6 +27,16 @@ export default {
       "x-cli-environment": "cli",
     },
   },
+  retry: {
+    // 429 = plan window / monthly pool spent. CommandCodeExecutor.computeRetryDelay
+    // parses the reset time from the error body and either waits for it or vetoes.
+    // attempts > 0 is what arms the computeRetryDelay hook in BaseExecutor.
+    429: { attempts: 1, delayMs: 0 },
+  },
+  features: {
+    usage: true,
+    usageApikey: true,
+  },
   models: [
     { id: "deepseek/deepseek-v4-pro", name: "DeepSeek V4 Pro" },
     { id: "deepseek/deepseek-v4-flash", name: "DeepSeek V4 Flash" },

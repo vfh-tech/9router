@@ -768,6 +768,27 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
         }, effectiveProxy);
         return { valid: res.ok, error: res.ok ? null : "Invalid API key" };
       }
+      case "commandcode": {
+        // Upstream NDJSON /alpha/generate — a 401/403 rejects the key;
+        // any other auth result (even 4xx/5xx) proves the key is accepted.
+        const res = await fetchWithConnectionProxy("https://api.commandcode.ai/alpha/generate", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${connection.apiKey}`,
+            "x-command-code-version": "0.25.7",
+            "x-cli-environment": "cli",
+          },
+          body: JSON.stringify({
+            model: "deepseek/deepseek-v4-flash",
+            stream: true,
+            messages: [{ role: "user", content: "ping" }],
+            max_tokens: 1,
+          }),
+        }, effectiveProxy);
+        const valid = res.status !== 401 && res.status !== 403;
+        return { valid, error: valid ? null : "Invalid API key" };
+      }
       case "qoder": {
         // PAT (pt-...) exchange → job token. A successful exchange proves the PAT.
         const raw = connection.apiKey || "";
