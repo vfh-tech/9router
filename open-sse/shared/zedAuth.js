@@ -35,6 +35,14 @@ const llmTokenCache = new Map();
 const modelCache = new Map();
 const modelInflight = new Map();
 
+// Drop expired entries so rotated tokens (keys embed token suffix) don't accumulate forever
+function sweepCache(cache) {
+  const now = Date.now();
+  for (const [k, v] of cache) {
+    if (v?.expiresAt < now) cache.delete(k);
+  }
+}
+
 function b64url(value) {
   return Buffer.from(value).toString("base64url");
 }
@@ -285,6 +293,7 @@ export async function fetchZedLlmToken(credentials, options = {}) {
     typeof data?.token === "string" ? data.token : data?.token?.[0] || data?.token?.value;
   if (!token) throw new Error("Zed did not return an LLM token");
   llmTokenCache.set(cacheKey, { token, expiresAt: Date.now() + LLM_TOKEN_TTL_MS });
+  sweepCache(llmTokenCache);
   return token;
 }
 
@@ -401,6 +410,7 @@ export async function resolveZedModels(credentials, options = {}) {
         .filter(Boolean),
     };
     modelCache.set(key, entry);
+    sweepCache(modelCache);
     return entry;
   })();
 

@@ -10,6 +10,13 @@ const attempts = new Map(); // ip → { fails, lockUntil, lockLevel, lastFailAt 
 function now() { return Date.now(); }
 
 function getEntry(ip) {
+  // Sweep expired entries so the Map can't grow unbounded (rotating IPs via trusted proxy)
+  if (attempts.size > 1000) {
+    const t = now();
+    for (const [key, v] of attempts) {
+      if (v.lastFailAt && t - v.lastFailAt > FAIL_WINDOW_MS && (!v.lockUntil || t >= v.lockUntil)) attempts.delete(key);
+    }
+  }
   const e = attempts.get(ip);
   if (!e) return null;
   // Auto reset if window expired and not currently locked

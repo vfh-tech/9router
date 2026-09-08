@@ -135,12 +135,20 @@ const CODEX_PORT = CODEX_CONFIG.fixedPort;
 // Pending exchange sessions keyed by state — used by server-side exchange mode
 const pendingExchanges = new Map();
 
+function reapStaleSessions(map) {
+  const cutoff = Date.now() - 10 * 60 * 1000; // 10 min — longer than any OAuth flow
+  for (const [key, s] of map) {
+    if (s.createdAt < cutoff) map.delete(key);
+  }
+}
+
 /**
  * Register a pending exchange session for server-side mode.
  * Modal client calls this before opening popup.
  */
 export function registerCodexSession({ state, codeVerifier, redirectUri }) {
   if (!state || !codeVerifier || !redirectUri) return false;
+  reapStaleSessions(pendingExchanges);
   pendingExchanges.set(state, {
     codeVerifier,
     redirectUri,
@@ -309,6 +317,7 @@ const xaiPendingExchanges = new Map();
 
 export function registerXaiSession({ state, codeVerifier, redirectUri }) {
   if (!state || !codeVerifier || !redirectUri) return false;
+  reapStaleSessions(xaiPendingExchanges);
   xaiPendingExchanges.set(state, {
     codeVerifier,
     redirectUri,

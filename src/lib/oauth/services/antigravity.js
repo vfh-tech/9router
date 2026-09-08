@@ -256,6 +256,7 @@ export class AntigravityService {
 
       await new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
+          clearInterval(checkInterval); // avoid zombie interval when timeout fires first
           reject(new Error("Authentication timeout (5 minutes)"));
         }, 300000);
 

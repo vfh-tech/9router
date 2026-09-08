@@ -9,6 +9,7 @@ export async function fetchElevenLabsVoices(apiKey) {
   const now = Date.now();
   const cached = _voicesCache.get(apiKey);
   if (cached && now - cached.time < VOICES_TTL) return cached.voices;
+  if (cached) _voicesCache.delete(apiKey); // expired entry — drop before refetch (unbounded-map leak)
 
   const res = await fetch("https://api.elevenlabs.io/v1/voices", {
     headers: { "xi-api-key": apiKey, "Content-Type": "application/json" },

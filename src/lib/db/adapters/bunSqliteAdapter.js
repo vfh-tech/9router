@@ -14,6 +14,7 @@ export async function createBunSqliteAdapter(filePath) {
   function prepare(sql) {
     let stmt = stmtCache.get(sql);
     if (!stmt) {
+      if (stmtCache.size > 200) stmtCache.clear(); // cap: dynamic SQL (dashboard filters) must not grow unbounded
       stmt = db.prepare(sql);
       stmtCache.set(sql, stmt);
     }

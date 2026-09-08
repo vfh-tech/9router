@@ -202,7 +202,10 @@ export class XaiService extends OAuthService {
 
       spinner.start("Waiting for xAI authorization...");
       await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("Authentication timeout (5 minutes)")), 300000);
+        const timeout = setTimeout(() => {
+          clearInterval(iv); // avoid zombie interval when timeout fires first
+          reject(new Error("Authentication timeout (5 minutes)"));
+        }, 300000);
         const iv = setInterval(() => {
           if (callbackParams) {
             clearInterval(iv);

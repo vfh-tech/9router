@@ -33,7 +33,7 @@ const DEFAULT_REGION = "us-east-1";
 const FETCH_TIMEOUT_MS = 30_000;
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes per credential
 
-/** @type {Map<string, { expiresAt: number, models: any[] }>} */
+/** @type {Map<string, { expiresAt: number, models: any[], rawModels: any[] }>} */
 const catalogCache = new Map();
 
 /**
@@ -306,6 +306,11 @@ export async function resolveKiroModels(credentials, options = {}) {
     }
   }
 
+  // Evict expired entries first — cacheKey can fall back to refreshToken, so
+  // rotated tokens would otherwise accumulate a full catalog per rotation.
+  for (const [k, v] of catalogCache) {
+    if (v.expiresAt <= now) catalogCache.delete(k);
+  }
   catalogCache.set(key, {
     expiresAt: now + CACHE_TTL_MS,
     models: expanded,

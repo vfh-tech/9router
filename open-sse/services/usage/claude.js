@@ -62,6 +62,7 @@ async function fetchClaudeUsageRaw(accessToken, proxyOptions = null) {
     if (cooldownUntil && Date.now() < cooldownUntil) {
       return await getClaudeUsageLegacy(accessToken, proxyOptions);
     }
+    if (cooldownUntil) oauthCooldown.delete(accessToken); // expired entry — drop it (unbounded-map leak)
 
     // Primary: OAuth usage endpoint (Claude Code consumer OAuth tokens)
     const oauthResponse = await proxyAwareFetch(CLAUDE_CONFIG.oauthUsageUrl, {

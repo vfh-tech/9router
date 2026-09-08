@@ -327,6 +327,12 @@ export async function resolveQoderModels(credentials, options = {}) {
       rawConfigs: fetched.rawConfigs,
       fetched: true,
     };
+    // Evict expired entries first — cacheKey can fall back to refreshToken, so
+    // rotated tokens would otherwise accumulate a full catalog per rotation.
+    const nowMs = Date.now();
+    for (const [k, v] of catalogCache) {
+      if (v.expiresAt <= nowMs) catalogCache.delete(k);
+    }
     catalogCache.set(key, entry);
     return entry;
   })();

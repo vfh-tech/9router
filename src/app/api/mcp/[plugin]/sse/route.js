@@ -12,6 +12,14 @@ export async function GET(request, { params }) {
   const encoder = new TextEncoder();
   let sid;
 
+  // request.signal fires reliably on client disconnect; cancel() is not always
+  // invoked in Next.js — without this, sessions (and the child process) leak.
+  request.signal.addEventListener(
+    "abort",
+    () => sid && unregisterSession(plugin, sid),
+    { once: true }
+  );
+
   const stream = new ReadableStream({
     start(controller) {
       const send = (chunk) => controller.enqueue(encoder.encode(chunk));
