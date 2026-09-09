@@ -3,7 +3,11 @@
 import { cn } from "@/shared/utils/cn";
 
 const variants = {
-  primary: "bg-brand-500 hover:bg-brand-600 text-white shadow-sm disabled:bg-surface-3 disabled:text-text-muted",
+  // Dark text on brand-500 #E56A4A: 5.6:1 (white text was 3.24:1, AA fail) — matches landing CTA treatment.
+  // Bg stays #E56A4A in dark mode too, so dark text reads there as well.
+  primary: "bg-brand-500 hover:bg-brand-600 text-[#1a1a1a] shadow-sm disabled:bg-surface-3 disabled:text-text-muted",
+  // Indigo-600/purple-600 halves: white text = 5.5:1 / 4.6:1 (indigo-500 was 3.96:1, AA fail)
+  tailscale: "bg-linear-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white shadow-sm disabled:bg-surface-3 disabled:text-text-muted",
   secondary: "bg-surface-2 hover:bg-surface-3 text-text-main border border-border disabled:opacity-50",
   outline: "border border-border text-text-main hover:bg-surface-2 hover:border-brand-500/40",
   ghost: "text-text-muted hover:bg-surface-2 hover:text-text-main",
@@ -33,6 +37,7 @@ export default function Button({
     <button
       className={cn(
         "inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 ease-out cursor-pointer",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/50 focus-visible:ring-offset-1",
         "active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100",
         variants[variant],
         sizes[size],

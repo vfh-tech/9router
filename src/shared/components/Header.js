@@ -79,7 +79,7 @@ const getPageInfo = (pathname) => {
     };
   if (pathname.includes("/combos"))
     return {
-      title: "Combos",
+      title: "Combo & Vision Adapter",
       description: "Model combos with fallback",
       icon: "layers",
       breadcrumbs: [],
@@ -143,7 +143,7 @@ const getPageInfo = (pathname) => {
     };
   if (pathname.includes("/endpoint"))
     return {
-      title: "Endpoint",
+      title: "Endpoint & Key",
       description: "API endpoint configuration",
       icon: "api",
       breadcrumbs: [],
@@ -171,7 +171,7 @@ const getPageInfo = (pathname) => {
     };
   if (pathname === "/dashboard")
     return {
-      title: "Endpoint",
+      title: "Endpoint & Key",
       description: "API endpoint configuration",
       icon: "api",
       breadcrumbs: [],

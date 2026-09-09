@@ -463,6 +463,11 @@ function checkForUpdate() {
       return;
     }
 
+    // ponytail: fork isn't published to npm (9router-vfh = 404), so registry
+    // checks can only ever hit upstream 9router versions. Skip entirely;
+    // restore this function if the fork ever gets published.
+    resolve(null);
+    return;
     const spinner = createSpinner("Checking for updates...").start();
     let resolved = false;
 

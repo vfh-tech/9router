@@ -10,10 +10,8 @@ export const TUNNEL_BENEFITS = [
 export const TUNNEL_PING_INTERVAL_MS = 2000;
 export const TUNNEL_PING_MAX_MS = 300000;
 export const STATUS_POLL_FAST_MS = 5000;
-export const STATUS_POLL_SLOW_MS = 30000;
 export const REACHABLE_MISS_THRESHOLD = 5;
 export const CLIENT_PING_FAST_MS = 10000;
-export const CLIENT_PING_SLOW_MS = 60000;
 export const CLIENT_PING_TIMEOUT_MS = 5000;
 
 export const CAVEMAN_LEVELS = [

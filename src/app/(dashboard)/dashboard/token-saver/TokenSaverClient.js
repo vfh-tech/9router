@@ -782,7 +782,7 @@ export default function TokenSaverClient() {
                 {pxpipeStatus.installed ? "Manage" : "Setup"}
               </button>
               <a
-                href="/dashboard/pxpipe"
+                href="/dashboard/token-saver"
                 className="text-xs text-primary underline hover:opacity-80"
               >
                 Dashboard
@@ -994,7 +994,7 @@ export default function TokenSaverClient() {
                 Repair
               </Button>
               <a
-                href="/dashboard/pxpipe#logs"
+                href="/dashboard/token-saver#logs"
                 className="col-span-2 rounded border border-border px-4 py-2 text-center text-sm hover:bg-surface-2"
               >
                 Open Logs

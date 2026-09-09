@@ -258,17 +258,21 @@ export async function proxy(request) {
     // If login not required, allow through
     if (!requireLogin) return NextResponse.next();
 
+    // Preserve the intended destination across the login round-trip.
+    const loginUrl = new URL("/login", request.url);
+    loginUrl.searchParams.set("next", pathname);
+
     // Verify JWT token
     const token = request.cookies.get("auth_token")?.value;
     if (token) {
       if (await verifyDashboardAuthToken(token)) {
         return NextResponse.next();
       } else {
-        return NextResponse.redirect(new URL("/login", request.url));
+        return NextResponse.redirect(loginUrl);
       }
     }
 
-    return NextResponse.redirect(new URL("/login", request.url));
+    return NextResponse.redirect(loginUrl);
   }
 
   // Redirect / to /dashboard if logged in, or /dashboard if it's the root

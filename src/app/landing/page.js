@@ -1,5 +1,5 @@
 "use client";
-import { useRouter } from "next/navigation";
+import Link from "next/link";
 import Navigation from "./components/Navigation";
 import HeroSection from "./components/HeroSection";
 import FlowAnimation from "./components/FlowAnimation";
@@ -9,7 +9,6 @@ import GetStarted from "./components/GetStarted";
 import Footer from "./components/Footer";
 
 export default function LandingPage() {
-  const router = useRouter();
   return (
     <div className="relative text-white font-sans overflow-x-hidden antialiased selection:bg-[#f97815] selection:text-white">
       {/* Animated Background */}
@@ -56,18 +55,20 @@ export default function LandingPage() {
               Join developers who are streamlining their AI integrations with 9Router. Open source and free to start.
             </p>
             <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-              <button 
-                onClick={() => router.push("/dashboard")}
-                className="w-full sm:w-auto h-14 px-10 rounded-lg bg-[#f97815] hover:bg-[#e0650a] text-[#181411] text-lg font-bold transition-all shadow-[0_0_20px_rgba(249,120,21,0.5)]"
+              <Link
+                href="/dashboard"
+                className="w-full sm:w-auto h-14 px-10 rounded-lg bg-[#f97815] hover:bg-[#e0650a] text-[#181411] text-lg font-bold transition-all shadow-[0_0_20px_rgba(249,120,21,0.5)] inline-flex items-center justify-center"
               >
                 Start Free
-              </button>
-              <button 
-                onClick={() => window.open("https://github.com/decolua/9router#readme", "_blank")}
-                className="w-full sm:w-auto h-14 px-10 rounded-lg border border-[#3a2f27] hover:bg-[#23180f] text-white text-lg font-bold transition-all"
+              </Link>
+              <a
+                href="https://github.com/decolua/9router#readme"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="w-full sm:w-auto h-14 px-10 rounded-lg border border-[#3a2f27] hover:bg-[#23180f] text-white text-lg font-bold transition-all inline-flex items-center justify-center"
               >
                 Read Documentation
-              </button>
+              </a>
             </div>
           </div>
         </section>
