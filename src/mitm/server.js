@@ -47,6 +47,10 @@ function sniCallback(servername, cb) {
       key: certData.key,
       cert: `${certData.cert}\n${rootCAPem}`
     });
+    if (certCache.size >= 200) {
+      const oldest = certCache.keys().next().value;
+      if (oldest) certCache.delete(oldest);
+    }
     certCache.set(servername, ctx);
     cb(null, ctx);
   } catch (e) {
@@ -73,18 +77,29 @@ try {
 
 // ── Helpers ───────────────────────────────────────────────────
 
-const cachedTargetIPs = {};
+const cachedTargetIPs = new Map();
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
 async function resolveTargetIP(hostname) {
-  const cached = cachedTargetIPs[hostname];
+  const cached = cachedTargetIPs.get(hostname);
   if (cached && Date.now() - cached.ts < CACHE_TTL_MS) return cached.ip;
   const resolver = new dns.Resolver();
   resolver.setServers(["8.8.8.8"]);
   const resolve4 = promisify(resolver.resolve4.bind(resolver));
   const addresses = await resolve4(hostname);
-  cachedTargetIPs[hostname] = { ip: addresses[0], ts: Date.now() };
-  return cachedTargetIPs[hostname].ip;
+  if (cachedTargetIPs.size >= 500) {
+    const now = Date.now();
+    for (const [k, v] of cachedTargetIPs) {
+      if (now - v.ts >= CACHE_TTL_MS) cachedTargetIPs.delete(k);
+    }
+    while (cachedTargetIPs.size >= 500) {
+      const oldest = cachedTargetIPs.keys().next().value;
+      if (!oldest) break;
+      cachedTargetIPs.delete(oldest);
+    }
+  }
+  cachedTargetIPs.set(hostname, { ip: addresses[0], ts: Date.now() });
+  return addresses[0];
 }
 
 function collectBodyRaw(req) {
@@ -164,6 +179,10 @@ async function negotiateAlpn(host) {
       ALPNProtocols: ["h2", "http/1.1"], rejectUnauthorized: false,
     }, () => {
       const proto = socket.alpnProtocol || "http/1.1";
+      if (alpnCache.size >= 200) {
+        const oldest = alpnCache.keys().next().value;
+        if (oldest) alpnCache.delete(oldest);
+      }
       alpnCache.set(host, proto);
       log(`🔗 [mitm] ALPN ${host} → ${proto}`);
       socket.end();

@@ -75,6 +75,8 @@ export async function exportDb() {
   const { exportSettings } = await import("./repos/settingsRepo.js");
 
   // Single transaction read — same pattern as importDb(), so the snapshot isn't torn by interleaved writes.
+  // Note: adapter.transaction(fn) executes immediately and returns the result (no lazy callable),
+  // so do NOT double-invoke with a trailing ().
   const raw = db.transaction(() => {
     const read = (sql) => db.all(sql);
     return {
@@ -88,7 +90,7 @@ export async function exportDb() {
       mitmAlias: read(`SELECT key, value FROM kv WHERE scope = 'mitmAlias'`),
       pricing: read(`SELECT key, value FROM kv WHERE scope = 'pricing'`),
     };
-  })();
+  });
 
   const out = {
     settings: await exportSettings(),

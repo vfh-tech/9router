@@ -27,6 +27,40 @@ const STRIKE_THRESHOLD = 3;
 const STRIKE_BLOCK_MS = 15 * 60_000;
 const strikeCounts = new Map(); // "connectionId|model" → { count, windowStart (anchored at first strike) }
 const strikeBlocks = new Map(); // "connectionId|model" → blockedUntil ms
+const MAX_QUOTA_MAP_SIZE = 1000;
+
+function sweepStaleQuotaState(now = Date.now()) {
+  if (strikeCounts.size > MAX_QUOTA_MAP_SIZE) {
+    for (const [k, s] of strikeCounts) {
+      if (now - s.windowStart > STRIKE_WINDOW_MS) strikeCounts.delete(k);
+    }
+    while (strikeCounts.size > MAX_QUOTA_MAP_SIZE) {
+      const oldest = strikeCounts.keys().next().value;
+      if (!oldest) break;
+      strikeCounts.delete(oldest);
+    }
+  }
+  if (strikeBlocks.size > MAX_QUOTA_MAP_SIZE) {
+    for (const [k, until] of strikeBlocks) {
+      if (until <= now) strikeBlocks.delete(k);
+    }
+    while (strikeBlocks.size > MAX_QUOTA_MAP_SIZE) {
+      const oldest = strikeBlocks.keys().next().value;
+      if (!oldest) break;
+      strikeBlocks.delete(oldest);
+    }
+  }
+  if (lastRefreshAt.size > MAX_QUOTA_MAP_SIZE) {
+    for (const [k, ts] of lastRefreshAt) {
+      if (now - ts > MIN_REFRESH_INTERVAL_MS * 10) lastRefreshAt.delete(k);
+    }
+    while (lastRefreshAt.size > MAX_QUOTA_MAP_SIZE) {
+      const oldest = lastRefreshAt.keys().next().value;
+      if (!oldest) break;
+      lastRefreshAt.delete(oldest);
+    }
+  }
+}
 
 /**
  * Re-apply active strike blocks onto a fresh quotas snapshot so the auth
@@ -93,6 +127,9 @@ export async function refreshAntigravityQuota(connectionId, accessToken, provide
 
   // Record every attempt so failed quota calls cannot amplify an upstream 429 burst.
   lastRefreshAt.set(connectionId, now);
+  if (lastRefreshAt.size > MAX_QUOTA_MAP_SIZE) {
+    sweepStaleQuotaState(now);
+  }
   const promise = _doRefresh(connectionId, accessToken, providerSpecificData, now);
   inflightRefresh.set(connectionId, promise);
   try {
@@ -158,6 +195,7 @@ export async function handleAntigravityQuotaError(connectionId, status, model, a
     const windowStart = strike && now - strike.windowStart <= STRIKE_WINDOW_MS ? strike.windowStart : now;
     const count = strike && windowStart === strike.windowStart ? strike.count + 1 : 1;
     strikeCounts.set(key, { count, windowStart });
+    sweepStaleQuotaState(now);
     if (count >= STRIKE_THRESHOLD) {
       strikeCounts.delete(key);
       const blockedUntil = now + STRIKE_BLOCK_MS;

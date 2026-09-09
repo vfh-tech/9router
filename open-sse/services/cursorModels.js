@@ -174,6 +174,9 @@ export async function resolveCursorModels(credentials, options = {}) {
   try {
     const models = await fetchCursorCatalog(credentials, options.signal);
     if (!models?.length) return null;
+    for (const [k, v] of catalogCache) {
+      if (v.expiresAt <= now) catalogCache.delete(k);
+    }
     catalogCache.set(key, { expiresAt: now + CACHE_TTL_MS, models });
     return { models };
   } catch (error) {

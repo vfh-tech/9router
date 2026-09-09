@@ -154,6 +154,16 @@ async function resolveRealIP(hostname) {
     resolver.setServers(GOOGLE_DNS_SERVERS);
     const resolve4 = promisify(resolver.resolve4.bind(resolver));
     const addresses = await resolve4(hostname);
+    if (DNS_CACHE.size >= 500) {
+      const now = Date.now();
+      for (const [k, v] of DNS_CACHE) {
+        if (v.expiry <= now) DNS_CACHE.delete(k);
+      }
+      if (DNS_CACHE.size >= 500) {
+        const oldest = DNS_CACHE.keys().next().value;
+        if (oldest) DNS_CACHE.delete(oldest);
+      }
+    }
     DNS_CACHE.set(hostname, { ip: addresses[0], expiry: Date.now() + MEMORY_CONFIG.dnsCacheTtlMs });
     return addresses[0];
   } catch (error) {
@@ -246,7 +256,14 @@ async function getDispatcher(proxyUrl) {
   if (!proxyDispatchers.has(normalized)) {
     // Evict oldest entry if max size reached
     if (proxyDispatchers.size >= MEMORY_CONFIG.proxyDispatchersMaxSize) {
-      proxyDispatchers.delete(proxyDispatchers.keys().next().value);
+      const oldestKey = proxyDispatchers.keys().next().value;
+      const oldest = proxyDispatchers.get(oldestKey);
+      if (oldest?.close) {
+        oldest.close().catch(() => {});
+      } else if (oldest?.destroy) {
+        oldest.destroy();
+      }
+      proxyDispatchers.delete(oldestKey);
     }
     const { ProxyAgent } = await import("undici");
     proxyDispatchers.set(normalized, new ProxyAgent({ uri: normalized }));

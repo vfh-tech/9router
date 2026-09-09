@@ -95,6 +95,11 @@ function rememberModels(models) {
     metadataByModelId.set(model.id, model);
     metadataByModelId.set(model.id.toLowerCase(), model);
   }
+  while (metadataByModelId.size > 500) {
+    const oldest = metadataByModelId.keys().next().value;
+    if (!oldest) break;
+    metadataByModelId.delete(oldest);
+  }
 }
 
 export function getCachedKimchiModelMetadata(modelId) {
@@ -166,6 +171,12 @@ export async function resolveKimchiModels(credentials, options = {}) {
     models,
     rawModels,
   };
+  // Evict expired entries first — cacheKey can fall back to refreshToken, so
+  // rotated tokens would otherwise accumulate a full catalog per rotation.
+  const nowMs = Date.now();
+  for (const [k, v] of catalogCache) {
+    if (v.expiresAt <= nowMs) catalogCache.delete(k);
+  }
   catalogCache.set(key, entry);
   return entry;
 }

@@ -1,5 +1,18 @@
 const REFRESH_RESULT_TTL_MS = 10_000;
+const MAX_DEDUP_ENTRIES = 200;
 const refreshDedupCache = new Map();
+
+function pruneExpiredOrOldest() {
+  const now = Date.now();
+  for (const [k, v] of refreshDedupCache) {
+    if (v.expiresAt && v.expiresAt <= now) refreshDedupCache.delete(k);
+  }
+  while (refreshDedupCache.size >= MAX_DEDUP_ENTRIES) {
+    const oldest = refreshDedupCache.keys().next().value;
+    if (!oldest) break;
+    refreshDedupCache.delete(oldest);
+  }
+}
 
 export async function dedupRefresh(provider, oldToken, fn, log) {
   if (!oldToken) return fn();
@@ -16,9 +29,11 @@ export async function dedupRefresh(provider, oldToken, fn, log) {
     }
     refreshDedupCache.delete(key);
   }
+  pruneExpiredOrOldest();
   const promise = (async () => {
     try {
       const result = await fn();
+      pruneExpiredOrOldest();
       refreshDedupCache.set(key, { result, expiresAt: Date.now() + REFRESH_RESULT_TTL_MS });
       return result;
     } catch (err) {
