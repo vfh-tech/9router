@@ -76,19 +76,8 @@ export default function APIPageClient() {
     tsAbortRef.current?.abort();
   }, []);
 
-  // Debounce reachable=false: server may briefly return false during background refresh.
-  // Only flip UI to "reconnecting" after N consecutive misses to avoid spinner flicker.
-  const tunnelMissRef = useRef(0);
-  const tsMissRef = useRef(0);
-  // Browser-side reachable cache (independent of backend DNS quirks)
-  const tunnelClientReachableRef = useRef(false);
-  const tsClientReachableRef = useRef(false);
-  // Track whether reachable=true was ever observed in this session.
-  // Distinguishes "Checking..." (initial cold cache) from "Reconnecting..." (lost connection).
-  const tunnelEverReachableRef = useRef(false);
-  const tsEverReachableRef = useRef(false);
-  const [tunnelEverReachable, setTunnelEverReachable] = useState(false);
-  const [tsEverReachable, setTsEverReachable] = useState(false);
+  // (reachable-miss refs declared just below with the shared status callbacks,
+  // ahead of the effects that use them.)
 
   // API key visibility toggle state
   const [visibleKeys, setVisibleKeys] = useState(new Set());
@@ -119,6 +108,64 @@ export default function APIPageClient() {
     fetchData();
     loadSettings();
   }, []);
+
+  // Debounce reachable=false: server may briefly return false during background refresh.
+  // Only flip UI to "reconnecting" after N consecutive misses to avoid spinner flicker.
+  const tunnelMissRef = useRef(0);
+  const tsMissRef = useRef(0);
+  // Browser-side reachable cache (independent of backend DNS quirks)
+  const tunnelClientReachableRef = useRef(false);
+  const tsClientReachableRef = useRef(false);
+  // Track whether reachable=true was ever observed in this session.
+  // Distinguishes "Checking..." (initial cold cache) from "Reconnecting..." (lost connection).
+  const tunnelEverReachableRef = useRef(false);
+  const tsEverReachableRef = useRef(false);
+  const [tunnelEverReachable, setTunnelEverReachable] = useState(false);
+  const [tsEverReachable, setTsEverReachable] = useState(false);
+
+  // Shared status callbacks — declared BEFORE the effects below that list them
+  // as deps: a const referenced in a dep array before its declaration line is a
+  // TDZ crash at first render (chunk TDZ 'Cannot access ... before initialization').
+  const updateReachable = useCallback((clientRef, missRef, setter, everRef, everSetter) => {
+    const reachable = clientRef.current;
+    if (reachable) {
+      missRef.current = 0;
+      setter(true);
+      if (!everRef.current) {
+        everRef.current = true;
+        everSetter(true);
+      }
+    } else {
+      missRef.current += 1;
+      if (missRef.current >= REACHABLE_MISS_THRESHOLD) setter(false);
+    }
+  }, []);
+
+  // Shared parser for /api/tunnel/status payloads (used by loadSettings + the poll).
+  const applyStatus = useCallback((data) => {
+    const tEnabled = data.tunnel?.settingsEnabled ?? data.tunnel?.enabled ?? false;
+    const tUrl = data.tunnel?.tunnelUrl || "";
+    setTunnelUrl(tUrl);
+    setTunnelPublicUrl(data.tunnel?.publicUrl || "");
+    setTunnelEnabled(tEnabled);
+    updateReachable(tunnelClientReachableRef, tunnelMissRef, setTunnelReachable, tunnelEverReachableRef, setTunnelEverReachable);
+
+    const tsEn = data.tailscale?.settingsEnabled ?? data.tailscale?.enabled ?? false;
+    const tsUrlVal = data.tailscale?.tunnelUrl || "";
+    setTsUrl(tsUrlVal);
+    setTsEnabled(tsEn);
+    updateReachable(tsClientReachableRef, tsMissRef, setTsReachable, tsEverReachableRef, setTsEverReachable);
+  }, [updateReachable]);
+
+  // Trust user intent (settingsEnabled): UI stays "enabled" while watchdog restarts process
+  const syncTunnelStatus = useCallback(async () => {
+    try {
+      const statusRes = await fetch("/api/tunnel/status", { cache: "no-store" });
+      if (!statusRes.ok) return;
+      const data = await statusRes.json();
+      applyStatus(data);
+    } catch { /* ignore poll errors */ }
+  }, [applyStatus]);
 
   // Status poll: only while degraded (not yet reachable). Stop once healthy to avoid spam.
   // Visibility re-check: refresh once when tab becomes visible.
@@ -170,49 +217,6 @@ export default function APIPageClient() {
     const id = setInterval(probeBoth, CLIENT_PING_FAST_MS);
     return () => clearInterval(id);
   }, [tunnelEnabled, tunnelUrl, tunnelPublicUrl, tsEnabled, tsUrl, tunnelReachable, tsReachable]);
-
-  // Client-side reachable only (server no longer probes; watchdog handles backend health).
-  // Miss-debounce: only flip to false after N consecutive misses.
-  const updateReachable = useCallback((clientRef, missRef, setter, everRef, everSetter) => {
-    const reachable = clientRef.current;
-    if (reachable) {
-      missRef.current = 0;
-      setter(true);
-      if (!everRef.current) {
-        everRef.current = true;
-        everSetter(true);
-      }
-    } else {
-      missRef.current += 1;
-      if (missRef.current >= REACHABLE_MISS_THRESHOLD) setter(false);
-    }
-  }, []);
-
-  // Shared parser for /api/tunnel/status payloads (used by loadSettings + the poll).
-  const applyStatus = useCallback((data) => {
-    const tEnabled = data.tunnel?.settingsEnabled ?? data.tunnel?.enabled ?? false;
-    const tUrl = data.tunnel?.tunnelUrl || "";
-    setTunnelUrl(tUrl);
-    setTunnelPublicUrl(data.tunnel?.publicUrl || "");
-    setTunnelEnabled(tEnabled);
-    updateReachable(tunnelClientReachableRef, tunnelMissRef, setTunnelReachable, tunnelEverReachableRef, setTunnelEverReachable);
-
-    const tsEn = data.tailscale?.settingsEnabled ?? data.tailscale?.enabled ?? false;
-    const tsUrlVal = data.tailscale?.tunnelUrl || "";
-    setTsUrl(tsUrlVal);
-    setTsEnabled(tsEn);
-    updateReachable(tsClientReachableRef, tsMissRef, setTsReachable, tsEverReachableRef, setTsEverReachable);
-  }, [updateReachable]);
-
-  // Trust user intent (settingsEnabled): UI stays "enabled" while watchdog restarts process
-  const syncTunnelStatus = useCallback(async () => {
-    try {
-      const statusRes = await fetch("/api/tunnel/status", { cache: "no-store" });
-      if (!statusRes.ok) return;
-      const data = await statusRes.json();
-      applyStatus(data);
-    } catch { /* ignore poll errors */ }
-  }, [applyStatus]);
 
   const loadSettings = async () => {
     setTunnelChecking(true);
