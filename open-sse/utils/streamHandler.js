@@ -191,6 +191,7 @@ export function createDisconnectAwareStream(transformStream, streamController, o
  */
 export function pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal = null, stallTimeoutMs = STREAM_STALL_TIMEOUT_MS) {
   let stallTimer = null;
+  let lastArmAt = Date.now();
   let chunkCount = 0;
   let totalBytes = 0;
   let lastChunkAt = Date.now();
@@ -201,12 +202,19 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
   };
   const armStall = () => {
     clearStall();
+    lastArmAt = Date.now();
     stallTimer = setTimeout(() => {
       stallTimer = null;
       dbg(tag, `STALL TIMEOUT ${stallTimeoutMs}ms | chunks=${chunkCount} | bytes=${totalBytes} | sinceLast=${Date.now() - lastChunkAt}ms`);
       streamController.handleError?.(new Error("stream stall timeout"));
       streamController.abort?.();
     }, stallTimeoutMs);
+  };
+  // Re-arm only when a meaningful slice of the stall window has elapsed since
+  // the last arm — one clearTimeout+setTimeout per upstream chunk is timer churn
+  // with no added safety beyond this granularity.
+  const rearmStallIfDue = () => {
+    if (Date.now() - lastArmAt >= stallTimeoutMs / 4) armStall();
   };
 
   // Wrap controller so every termination path clears the stall timer.
@@ -222,9 +230,9 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
     abort: () => { clearStall(); streamController.abort(); }
   };
 
-  armStall();
-  dbg(tag, `pipe start | stallTimeout=${stallTimeoutMs}ms`);
-
+  // Stall watchdog + counters live in a tap on the transform's WRITABLE side, so
+  // raw upstream bytes reset the timer even when the SSE decoder emits nothing
+  // for long stretches (reasoning models, binary frame buffering).
   const upstreamTap = new TransformStream({
     transform(chunk, controller) {
       chunkCount++;
@@ -236,7 +244,7 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
       if (isDebugEnabled && (chunkCount <= 5 || chunkCount % 20 === 0 || gap > 5000)) {
         dbg(tag, `chunk #${chunkCount} | size=${sz}B | gap=${gap}ms | total=${totalBytes}B`);
       }
-      armStall();
+      rearmStallIfDue();
       controller.enqueue(chunk);
     },
     flush() { dbg(tag, `upstream EOF | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); clearStall(); }

@@ -1,10 +1,12 @@
 // Public API barrel — all DB functions
 import { getAdapter } from "./driver.js";
+import { invalidateSettingsCache } from "./repos/settingsRepo.js";
 import { stringifyJson, parseJson } from "./helpers/jsonCol.js";
 
 // Settings
 export {
   getSettings, updateSettings, isCloudEnabled, getCloudUrl, exportSettings,
+  invalidateSettingsCache,
 } from "./repos/settingsRepo.js";
 
 // Provider connections
@@ -117,6 +119,7 @@ export async function importDb(payload) {
 
   db.transaction(() => {
     // Wipe all tables (keep _meta)
+    invalidateSettingsCache();
     db.run(`DELETE FROM settings`);
     db.run(`DELETE FROM providerConnections`);
     db.run(`DELETE FROM providerNodes`);

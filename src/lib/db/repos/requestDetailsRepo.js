@@ -112,7 +112,7 @@ async function flushToDatabase() {
             latency: item.latency || {},
             tokens: item.tokens || {},
             request: truncateField(item.request, config.maxJsonSize),
-            providerRequest: truncateField(item.providerRequest, config.maxJsonSize),
+            providerRequest: item.providerRequest, // already truncated at push
             providerResponse: truncateField(item.providerResponse, config.maxJsonSize),
             response: truncateField(item.response, config.maxJsonSize),
             pxpipe: item.pxpipe || undefined,
@@ -144,6 +144,10 @@ export async function saveRequestDetail(detail) {
   const config = await getObservabilityConfig();
   if (!config.enabled) {return;}
 
+  // Truncate heavy fields at push, not at flush — providerRequest carries the
+  // full translated body (incl. base64 images) and would otherwise sit in the
+  // buffer until the next flush tick.
+  detail.providerRequest = truncateField(detail.providerRequest, config.maxJsonSize);
   writeBuffer.push(detail);
 
   // Trigger immediate flush if batch threshold reached.

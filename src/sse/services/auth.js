@@ -9,6 +9,19 @@ import * as log from "../utils/logger.js";
 // Mutex to prevent race conditions during account selection
 let selectionMutex = Promise.resolve();
 
+// 30s in-memory cache for active proxy pools — the free-provider path runs
+// per request and a full-table SQLite read there is avoidable. ponytail:
+// ceiling = TTL cache, no invalidation hook; dashboard pool edits take effect
+// within one TTL window.
+const POOL_LIST_CACHE_TTL_MS = 30_000;
+let poolListCache = { pools: null, expiresAt: 0 };
+async function getCachedActivePools() {
+  if (poolListCache.pools && Date.now() < poolListCache.expiresAt) return poolListCache.pools;
+  const pools = await getProxyPools({ isActive: true });
+  poolListCache = { pools, expiresAt: Date.now() + POOL_LIST_CACHE_TTL_MS };
+  return pools;
+}
+
 const GITHUB_MONTHLY_USAGE_LIMIT = "you've reached your additional usage limit for your plan";
 
 function githubMonthlyResetMs(status, errorText, provider) {
@@ -49,7 +62,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       const strategy = override.rotateStrategy || "none";
       let pickedId = override.proxyPoolId || null;
       if (strategy !== "none") {
-        const allPools = await getProxyPools({ isActive: true });
+        const allPools = await getCachedActivePools();
         const poolIds = allPools.filter(p => p.proxyUrl).map(p => p.id);
         pickedId = pickProxyPoolId(poolIds, strategy, providerId);
       }

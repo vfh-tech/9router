@@ -1,4 +1,4 @@
-import { getUsageStats, statsEmitter, getActiveRequests } from "@/lib/usageDb";
+import { statsEmitter, getActiveRequests } from "@/lib/usageDb";
 
 export const dynamic = "force-dynamic";
 
@@ -21,28 +21,13 @@ export async function GET(request) {
 
   const stream = new ReadableStream({
     async start(controller) {
-      // Full stats refresh (heavy) + immediate lightweight push
-      state.send = async () => {
+      // Lightweight-only push: the SSE client (UsageStats.js) merges just
+      // activeRequests/recentRequests/errorProvider/pending — the full breakdown
+      // comes from GET /api/usage/stats. Running the heavy getUsageStats() scan
+      // here re-scanned the whole usageHistory table per update for data the
+      // client discarded, interleaving with stream chunk processing.
+      const push = async () => {
         if (state.closed) return;
-        try {
-          // Push lightweight update immediately so UI reflects changes fast
-          if (state.cachedStats) {
-            const { activeRequests, recentRequests, errorProvider } = await getActiveRequests();
-            const quickStats = { ...state.cachedStats, activeRequests, recentRequests, errorProvider };
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify(quickStats)}\n\n`));
-          }
-          // Then do full recalc and update cache
-          const stats = await getUsageStats();
-          state.cachedStats = stats;
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(stats)}\n\n`));
-        } catch {
-          cleanup();
-        }
-      };
-
-      // Lightweight push: only refresh activeRequests + recentRequests on pending changes
-      state.sendPending = async () => {
-        if (state.closed || !state.cachedStats) return;
         try {
           const { activeRequests, recentRequests, errorProvider } = await getActiveRequests();
           const stats = { ...state.cachedStats, activeRequests, recentRequests, errorProvider };
@@ -52,7 +37,20 @@ export async function GET(request) {
         }
       };
 
-      await state.send();
+      state.send = push;
+      // sendPending: same lightweight payload; skip before first push (no cache yet)
+      state.sendPending = () => (state.cachedStats ? push() : Promise.resolve());
+
+      // Seed cache with the 4 mergeable fields only (no heavy stats scan)
+      try {
+        const live = await getActiveRequests();
+        state.cachedStats = {
+          activeRequests: live.activeRequests,
+          recentRequests: live.recentRequests,
+          errorProvider: live.errorProvider,
+        };
+      } catch { /* first push will retry */ }
+      await push();
 
       statsEmitter.on("update", state.send);
       statsEmitter.on("pending", state.sendPending);

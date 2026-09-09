@@ -42,22 +42,17 @@ export async function getModelInfo(modelStr) {
     // Provider-node prefixes are user-defined. They must not override built-in
     // provider ids/aliases such as `cf`, `cloudflare-ai`, `openai`, or `hf`.
     if (!RESERVED_PROVIDER_PREFIXES.has(parsed.providerAlias)) {
-      const openaiNodes = await getProviderNodes({ type: "openai-compatible" });
-      const matchedOpenAI = openaiNodes.find((node) => node.prefix === parsed.providerAlias);
-      if (matchedOpenAI) {
-        return { provider: matchedOpenAI.id, model: parsed.model };
-      }
-
-      const anthropicNodes = await getProviderNodes({ type: "anthropic-compatible" });
-      const matchedAnthropic = anthropicNodes.find((node) => node.prefix === parsed.providerAlias);
-      if (matchedAnthropic) {
-        return { provider: matchedAnthropic.id, model: parsed.model };
-      }
-
-      const embeddingNodes = await getProviderNodes({ type: "custom-embedding" });
-      const matchedEmbedding = embeddingNodes.find((node) => node.prefix === parsed.providerAlias);
-      if (matchedEmbedding) {
-        return { provider: matchedEmbedding.id, model: parsed.model };
+      // Concurrent — the 3 sequential full-table SELECTs sat on the TTFT path.
+      const [openaiNodes, anthropicNodes, embeddingNodes] = await Promise.all([
+        getProviderNodes({ type: "openai-compatible" }),
+        getProviderNodes({ type: "anthropic-compatible" }),
+        getProviderNodes({ type: "custom-embedding" }),
+      ]);
+      const matched = [openaiNodes, anthropicNodes, embeddingNodes]
+        .flat()
+        .find((node) => node.prefix === parsed.providerAlias);
+      if (matched) {
+        return { provider: matched.id, model: parsed.model };
       }
     }
     return {
@@ -91,4 +86,28 @@ export async function getComboModels(modelStr) {
     return combo.models;
   }
   return null;
+}
+
+// ponytail: negative cache for combo-name misses (bare model names hit the
+// combos table on every request). Ceiling: 5s TTL; CRUD through localDb
+// invalidates naturally on TTL expiry — no cross-file invalidation wiring.
+const COMBO_MISS_TTL_MS = 5000;
+const comboMissCache = new Map(); // name -> ts
+
+/**
+ * Memoized getComboByName: returns null for misses without re-querying
+ * within the TTL. Use in hot paths (chat.js handleChat) instead of the raw
+ * repos call.
+ */
+export async function getComboByNameCached(name) {
+  const missedAt = comboMissCache.get(name);
+  if (missedAt) {
+    if (Date.now() - missedAt < COMBO_MISS_TTL_MS) return null;
+    comboMissCache.delete(name);
+  }
+  const combo = await getComboByName(name);
+  if (!combo) comboMissCache.set(name, Date.now());
+  // Bound the cache: misses are per model name, prune when oversized.
+  if (comboMissCache.size > 500) comboMissCache.clear();
+  return combo;
 }

@@ -31,6 +31,10 @@ const nextConfig = {
   images: {
     unoptimized: true
   },
+  // Localhost LLM gateway: gzip adds per-chunk deflate + Z_SYNC_FLUSH to SSE
+  // (compression() attaches when compress !== false, and its compressible()
+  // regex matches text/event-stream). CLI clients don't want gzip.
+  compress: false,
   env: {},
   experimental: {
     // #1529/#1572: LLM clients can send long context or base64 image payloads through /v1 rewrites.

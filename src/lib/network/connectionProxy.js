@@ -6,6 +6,28 @@ function normalizeString(value) {
   return String(value).trim();
 }
 
+// ─── Proxy pool read cache (in-memory) ─────────────────────────────
+// Hot path: resolveConnectionProxyConfig runs per chat request; without a
+// cache that's a SQLite SELECT every time. TTL 30s — proxy edits in the
+// dashboard take effect within one TTL window. ponytail: ceiling = TTL cache
+// with no invalidation hook; upgrade path = invalidate-on-write in the pool
+// repo if instant pickup is ever needed.
+const POOL_CACHE_TTL_MS = 30_000;
+const poolCache = new Map(); // poolId → { pool, expiresAt }
+
+async function getProxyPoolByIdCached(poolId) {
+  const cached = poolCache.get(poolId);
+  if (cached && Date.now() < cached.expiresAt) return cached.pool;
+  const pool = await getProxyPoolById(poolId);
+  poolCache.set(poolId, { pool, expiresAt: Date.now() + POOL_CACHE_TTL_MS });
+  // Bound memory: pools are few; this only guards against pathological churn.
+  if (poolCache.size > 100) {
+    const oldest = poolCache.keys().next().value;
+    poolCache.delete(oldest);
+  }
+  return pool;
+}
+
 // ─── Proxy pool rotation state (in-memory) ─────────────────────────
 const rotateState = new Map(); // providerId → { index }
 
@@ -83,7 +105,7 @@ export async function resolveConnectionProxyConfig(
      * -----------------------------
      */
     if (proxyPoolId) {
-      const proxyPool = await getProxyPoolById(proxyPoolId);
+      const proxyPool = await getProxyPoolByIdCached(proxyPoolId);
 
       const proxyUrl = normalizeString(proxyPool?.proxyUrl);
       const noProxy = normalizeString(proxyPool?.noProxy);

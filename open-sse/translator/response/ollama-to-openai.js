@@ -57,13 +57,8 @@ export function ollamaToOpenAIResponse(chunk, state) {
   // Skip empty chunks
   if (!content && !thinking && !toolCalls) return null;
 
-  // Accumulate content in state
-  if (content) {
-    state.accumulatedContent = (state.accumulatedContent || "") + content;
-  }
-  if (thinking) {
-    state.accumulatedThinking = (state.accumulatedThinking || "") + thinking;
-  }
+  // ponytail: content accumulation happens in stream.js (accumulatedContent);
+  // keeping a second copy here was dead state — re-add only if a caller reads it.
 
   const delta = {};
   if (content) delta.content = content;

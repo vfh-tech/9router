@@ -61,7 +61,7 @@ const DEFAULT_SETTINGS = {
   pxpipeEnabled: false,
   pxpipeAutoInstall: true,
   pxpipeMinChars: 25000,
-  pxpipeTimeoutMs: 15000,
+  pxpipeTimeoutMs: 3000,
 };
 
 async function readRaw() {
@@ -89,9 +89,24 @@ export function mergeWithDefaults(raw) {
   return merged;
 }
 
+// ponytail: 1s TTL cache — hot path (every /v1 request) reads settings 3-5×.
+// Ceiling: cross-process writers (importDb) see ≤1s staleness; bump TTL only
+// with a proper invalidation hook in db/index.js importDb().
+const SETTINGS_CACHE_TTL_MS = 1000;
+let settingsCache = null; // { merged, ts }
+
+export function invalidateSettingsCache() {
+  settingsCache = null;
+}
+
 export async function getSettings() {
+  if (settingsCache && Date.now() - settingsCache.ts < SETTINGS_CACHE_TTL_MS) {
+    return settingsCache.merged;
+  }
   const raw = await readRaw();
-  return mergeWithDefaults(raw);
+  const merged = mergeWithDefaults(raw);
+  settingsCache = { merged, ts: Date.now() };
+  return merged;
 }
 
 // Atomic read-merge-write inside transaction (prevents losing concurrent updates)
@@ -107,6 +122,7 @@ export async function updateSettings(updates) {
       [stringifyJson(next)],
     );
   });
+  invalidateSettingsCache();
   return mergeWithDefaults(next);
 }
 

@@ -3,7 +3,7 @@
 // any error/timeout returns { body: null, summary } and leaves the request untouched.
 import { FORMATS } from "../translator/formats.js";
 
-const DEFAULT_TIMEOUT_MS = 15000;
+const DEFAULT_TIMEOUT_MS = 3000; // was 15s — hung pxpipe host stalled TTFB; 3s caps worst case (raise via pxpipeTimeoutMs setting)
 const DEFAULT_MIN_CHARS = 25000;
 // pxpipe's own profitability gate assumes ~4 chars/token; reuse it for the
 // estimated before/after numbers surfaced in stats (marked "estimated" in UI).

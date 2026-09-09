@@ -166,7 +166,9 @@ export function translateResponse(targetFormat, sourceFormat, chunk, state) {
   // even when no format conversion is needed, so streamed tool_use blocks must
   // be decloaked here or the client sees an unknown ("_ide"-suffixed) tool.
   if (sourceFormat === targetFormat) {
-    return [decloakStreamChunk(chunk, state?.toolNameMap)];
+    // No map → decloak is a no-op; skip the call + its per-chunk array wrapper.
+    const toolNameMap = state?.toolNameMap;
+    return toolNameMap?.size ? [decloakStreamChunk(chunk, toolNameMap)] : [chunk];
   }
 
   let results = [chunk];

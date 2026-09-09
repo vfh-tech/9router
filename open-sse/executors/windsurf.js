@@ -138,7 +138,8 @@ function encodeVarint(value) {
 
 function concatBytes(arrays) {
   const total = arrays.reduce((n, a) => n + a.length, 0);
-  const out = new Uint8Array(total);
+  // Buffer.allocUnsafe: same as Uint8Array(total) but faster (V8-internal).
+  const out = Buffer.allocUnsafe(total);
   let off = 0;
   for (const a of arrays) {
     out.set(a, off);
@@ -441,7 +442,13 @@ export class WindsurfExecutor extends BaseExecutor {
       async start(controller) {
         const enc = new TextEncoder();
         let roleEmitted = false;
-        let totalText = "";
+        // Unary-fallback state: the original accumulated every chunk into
+        // `totalText` just to (a) test truthiness and (b) re-emit the text as
+        // one chunk when nothing streamed. Deltas already carry the content,
+        // so keep only the LAST text (fallback re-emits it; unary responses
+        // have exactly one content frame) plus a saw flag — O(1) instead of O(n).
+        let sawContent = false;
+        let lastText = "";
         let promptTokens = 0;
         let completionTokens = 0;
         let hadError = null;
@@ -472,7 +479,8 @@ export class WindsurfExecutor extends BaseExecutor {
               : decodeCompletionChunk(payload);
 
             if (chunk.kind === "content" && chunk.text) {
-              totalText += chunk.text;
+              sawContent = true;
+              lastText = chunk.text;
               if (!roleEmitted) {
                 emit(`data: ${JSON.stringify({
                   id: responseId, object: "chat.completion.chunk", created, model,
@@ -533,14 +541,14 @@ export class WindsurfExecutor extends BaseExecutor {
           }
 
           // Unary fallback: nothing streamed but text decoded → emit as one chunk.
-          if (!roleEmitted && totalText) {
+          if (!roleEmitted && sawContent) {
             emit(`data: ${JSON.stringify({
               id: responseId, object: "chat.completion.chunk", created, model,
               choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }],
             })}\n\n`);
             emit(`data: ${JSON.stringify({
               id: responseId, object: "chat.completion.chunk", created, model,
-              choices: [{ index: 0, delta: { content: totalText }, finish_reason: null }],
+              choices: [{ index: 0, delta: { content: lastText }, finish_reason: null }],
             })}\n\n`);
           }
 

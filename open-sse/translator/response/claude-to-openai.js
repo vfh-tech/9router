@@ -93,6 +93,11 @@ export function claudeToOpenAIResponse(chunk, state) {
       } else if (delta?.type === "input_json_delta" && delta.partial_json) {
         const toolCall = state.toolCalls.get(chunk.index);
         if (toolCall) {
+          // Keep the accumulated buffer: the toolCall object stored at
+          // content_block_start is pushed BY REFERENCE (line ~80), so this
+          // += is what makes the start-chunk's arguments complete by the
+          // time the stream is serialized — removing it rewrites the
+          // start-chunk's arguments to "" (caught by the golden snapshot).
           toolCall.function.arguments += delta.partial_json;
           results.push(createChunk(state, {
             tool_calls: [{

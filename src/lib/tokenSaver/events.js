@@ -10,22 +10,42 @@ const ROTATED_FILE = () => path.join(BASE_DIR, "events.jsonl.1");
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-export function _setDir(dir) { BASE_DIR = dir; }
+export function _setDir(dir) { BASE_DIR = dir; dirEnsured = false; }
 
+let dirEnsured = false;
+
+// Called pre-dispatch on the request hot path: only the mkdir/stat guard may
+// run sync; the append itself must be async (fs.appendFile), never block TTFB.
 function ensureDir() {
-  if (!fs.existsSync(BASE_DIR)) fs.mkdirSync(BASE_DIR, { recursive: true });
+  if (dirEnsured) return;
+  try {
+    if (!fs.existsSync(BASE_DIR)) fs.mkdirSync(BASE_DIR, { recursive: true });
+    dirEnsured = true;
+  } catch { /* ignore — appendFile below will fail open */ }
 }
 
+// Re-check rotation at most once per interval; avoids a statSync per event.
+let lastRotateCheck = 0;
+const ROTATE_CHECK_INTERVAL_MS = 30 * 1000;
+
 // Fire-and-forget: token-saver stats must never break the request path.
+// Returns the append promise (for tests); callers on the hot path don't await.
 export function appendTokenSaverEvent(event) {
   try {
     ensureDir();
-    try {
-      const stat = fs.statSync(EVENTS_FILE());
-      if (stat.size > MAX_FILE_BYTES) fs.renameSync(EVENTS_FILE(), ROTATED_FILE());
-    } catch { /* no file yet */ }
-    fs.appendFileSync(EVENTS_FILE(), JSON.stringify(event) + "\n");
+    const now = Date.now();
+    if (now - lastRotateCheck > ROTATE_CHECK_INTERVAL_MS) {
+      lastRotateCheck = now;
+      try {
+        const stat = fs.statSync(EVENTS_FILE());
+        if (stat.size > MAX_FILE_BYTES) fs.renameSync(EVENTS_FILE(), ROTATED_FILE());
+      } catch { /* no file yet */ }
+    }
+    return new Promise((resolve) => {
+      fs.appendFile(EVENTS_FILE(), JSON.stringify(event) + "\n", () => resolve()); // ignore errors — fail open
+    });
   } catch { /* ignore */ }
+  return Promise.resolve();
 }
 
 export function readTokenSaverEvents({ sinceMs = null, limit = null, saver = null, provider = null } = {}) {

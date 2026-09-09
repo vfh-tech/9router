@@ -229,18 +229,25 @@ function decompressPayload(payload, flags) {
 }
 
 // Read one cursor protobuf frame: header + bounds + decompress. Returns status + payload + new offset.
+// Hot path: debug strings are built lazily (CURSOR_STREAM_DEBUG gate first) so a
+// silent stream pays no template-string cost per frame.
 function readCursorFrame(buffer, offset, frameNum, tag) {
-  if (offset + 5 > buffer.length) {
+  if (CURSOR_STREAM_DEBUG && offset + 5 > buffer.length) {
     debugLog(`[CURSOR BUFFER${tag}] Reached end, offset=${offset}, remaining=${buffer.length - offset}`);
     return { status: "done" };
   }
+  if (offset + 5 > buffer.length) return { status: "done" };
 
   const flags = buffer[offset];
   const length = buffer.readUInt32BE(offset + 1);
-  debugLog(`[CURSOR BUFFER${tag}] Frame ${frameNum + 1}: flags=0x${flags.toString(16).padStart(2, "0")}, length=${length}`);
+  if (CURSOR_STREAM_DEBUG) {
+    debugLog(`[CURSOR BUFFER${tag}] Frame ${frameNum + 1}: flags=0x${flags.toString(16).padStart(2, "0")}, length=${length}`);
+  }
 
   if (offset + 5 + length > buffer.length) {
-    debugLog(`[CURSOR BUFFER${tag}] Incomplete frame, offset=${offset}, length=${length}, buffer.length=${buffer.length}`);
+    if (CURSOR_STREAM_DEBUG) {
+      debugLog(`[CURSOR BUFFER${tag}] Incomplete frame, offset=${offset}, length=${length}, buffer.length=${buffer.length}`);
+    }
     return { status: "done" };
   }
 
@@ -248,20 +255,28 @@ function readCursorFrame(buffer, offset, frameNum, tag) {
   const newOffset = offset + 5 + length;
   payload = decompressPayload(payload, flags);
   if (!payload) {
-    debugLog(`[CURSOR BUFFER${tag}] Frame ${frameNum + 1}: decompression failed, skipping`);
+    if (CURSOR_STREAM_DEBUG) {
+      debugLog(`[CURSOR BUFFER${tag}] Frame ${frameNum + 1}: decompression failed, skipping`);
+    }
     return { status: "skip", offset: newOffset };
   }
   return { status: "ok", payload, offset: newOffset };
 }
 
-function createErrorResponse(jsonError) {
-  const errorMsg = jsonError?.error?.details?.[0]?.debug?.details?.title
+// Message-only extractor shared by createErrorResponse and the streaming
+// SSE-error path (which cannot rewrite status codes once 200 is committed).
+function extractCursorErrorMessage(jsonError) {
+  return jsonError?.error?.details?.[0]?.debug?.details?.title
     || jsonError?.error?.details?.[0]?.debug?.details?.detail
     || jsonError?.error?.message
     || "API Error";
-  
+}
+
+function createErrorResponse(jsonError) {
+  const errorMsg = extractCursorErrorMessage(jsonError);
+
   const isRateLimit = jsonError?.error?.code === "resource_exhausted";
-  
+
   return new Response(JSON.stringify({
     error: {
       message: errorMsg,
@@ -705,8 +720,8 @@ export class CursorExecutor extends BaseExecutor {
       }
 
       const transformedResponse = stream !== false
-        ? this.transformProtobufToSSE(response.body, model, body)
-        : this.transformProtobufToJSON(response.body, model, body);
+        ? this.transformProtobufStreamToSSE(response.body, model, body)
+        : this.transformProtobufToJSON(await response.arrayBuffer(), model, body);
 
       return { response: transformedResponse, url, headers, transformedBody: body };
     } catch (error) {
@@ -877,6 +892,114 @@ export class CursorExecutor extends BaseExecutor {
     });
   }
 
+  // ponytail: incremental streaming decoder for the Cursor protobuf SSE path.
+  // Replaces the old read-all-then-join transformProtobufToSSE, whose TTFT equaled
+  // the full generation time. Per-frame logic is shared with the buffer version via
+  // _cursorFrameToSseChunks; tests still cover transformProtobufToSSE directly.
+  transformProtobufStreamToSSE(bodyStream, model, body) {
+    const responseId = `chatcmpl-cursor-${Date.now()}`;
+    const created = Math.floor(Date.now() / 1000);
+    const encoder = new TextEncoder();
+
+    const sess = {
+      model, body, responseId, created,
+      totalContent: "",
+      totalThinking: "",
+      emittedComposerThinkingContentLength: 0,
+      toolCalls: [],
+      toolCallsMap: new Map(),
+      finalizedIds: new Set(),
+      emittedToolCallIds: new Set(),
+    };
+
+    let pending = Buffer.alloc(0);
+    const offsetRef = { value: 0 };
+    let frameCount = 0;
+    let roleSent = false;
+    let stopped = false;
+
+    const finalize = (controller) => {
+      if (sess.terminalSent) return;
+      sess.terminalSent = true;
+      const events = this._cursorFinalizeSse(sess);
+      for (const c of events) controller.enqueue(encoder.encode(c));
+    };
+
+    return new TransformStream({
+      transform(chunk, controller) {
+        if (stopped) return;
+        // Grow pending with an offset cursor instead of re-concatenating the
+        // whole remainder on every read (2 full-stream copies per chunk).
+        const incoming = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        pending = pending.length === 0
+          ? incoming
+          : Buffer.concat([pending.subarray(offsetRef.value), incoming]);
+        offsetRef.value = 0;
+
+        while (true) {
+          const frame = readCursorFrame(pending, offsetRef.value, frameCount, " SSE");
+          if (frame.status === "done") break; // incomplete frame: wait for more bytes
+          offsetRef.value = frame.offset;
+          frameCount++;
+          if (frame.status === "skip") continue;
+          const payload = frame.payload;
+
+          // JSON error frames (byte-guard: only decode if starts with '{')
+          if (payload[0] === 0x7b) {
+            try {
+              const text = payload.toString("utf-8");
+              if (text.includes('"error"')) {
+                const hasContent = roleSent || sess.totalContent || sess.toolCallsMap.size > 0;
+                debugLog(
+                  `[CURSOR STREAM SSE] Error frame (hasContent=${hasContent}): ${text.slice(0, 500)}`
+                );
+                stopped = true;
+                if (hasContent) break;
+                // Upstream failed before any content: surface as SSE error
+                // (headers are already committed; agent path emits the same shape).
+                const err = JSON.parse(text);
+                controller.enqueue(encoder.encode(sseChunk({
+                  error: { message: extractCursorErrorMessage(err), type: "api_error" },
+                })));
+                sess.terminalSent = true;
+                return;
+              }
+            } catch {}
+          }
+
+          const result = extractTextFromResponse(new Uint8Array(payload));
+          if (CURSOR_STREAM_DEBUG) debugLog(`[CURSOR DECODED SSE] Frame ${frameCount}:`, result);
+
+          if (result.error) {
+            const hasContent = roleSent || sess.totalContent || sess.toolCallsMap.size > 0;
+            if (CURSOR_STREAM_DEBUG) debugLog(`[CURSOR STREAM SSE] Decoded error (hasContent=${hasContent}): ${result.error}`);
+            stopped = true;
+            if (hasContent) break;
+            // No content yet: emit as SSE error event like the agent path.
+            controller.enqueue(encoder.encode(sseChunk({
+              error: { message: result.error, type: "rate_limit_error" },
+            })));
+            sess.terminalSent = true;
+            return;
+          }
+
+          const events = this._cursorFrameToSseEvents(result, sess, {
+            sendRole: !roleSent,
+          });
+          if (events.roleChunk) {
+            roleSent = true;
+            controller.enqueue(encoder.encode(events.roleChunk));
+          }
+          for (const c of events.chunks) controller.enqueue(encoder.encode(c));
+        }
+      },
+
+      flush(controller) {
+        if (!stopped) finalize(controller);
+      },
+    });
+  }
+
   transformProtobufToSSE(buffer, model, body) {
     const responseId = `chatcmpl-cursor-${Date.now()}`;
     const created = Math.floor(Date.now() / 1000);
@@ -920,11 +1043,11 @@ export class CursorExecutor extends BaseExecutor {
       }
 
       const result = extractTextFromResponse(new Uint8Array(payload));
-      debugLog(`[CURSOR DECODED SSE] Frame ${frameCount}:`, result);
+      if (CURSOR_STREAM_DEBUG) debugLog(`[CURSOR DECODED SSE] Frame ${frameCount}:`, result);
 
       if (result.error) {
         const hasContent = chunks.length > 0 || totalContent || toolCallsMap.size > 0;
-        debugLog(`[CURSOR BUFFER SSE] Decoded error (hasContent=${hasContent}): ${result.error}`);
+        if (CURSOR_STREAM_DEBUG) debugLog(`[CURSOR BUFFER SSE] Decoded error (hasContent=${hasContent}): ${result.error}`);
         if (hasContent) {
           break;
         }
@@ -953,7 +1076,6 @@ export class CursorExecutor extends BaseExecutor {
         if (toolCallsMap.has(tc.id)) {
           // Accumulate arguments for existing tool call
           const existing = toolCallsMap.get(tc.id);
-          const oldArgsLen = existing.function.arguments.length;
           existing.function.arguments += tc.function.arguments;
           existing.isLast = tc.isLast;
 
@@ -1038,12 +1160,137 @@ export class CursorExecutor extends BaseExecutor {
       `[CURSOR BUFFER SSE] Parsed ${frameCount} frames, toolCallsMap size: ${toolCallsMap.size}, toolCalls array: ${toolCalls.length}`
     );
 
+    const tail = this._cursorFinalizeSse({
+      model, body, responseId, created,
+      totalContent, totalThinking, emittedComposerThinkingContentLength,
+      toolCalls, toolCallsMap, finalizedIds, emittedToolCallIds,
+    });
+    chunks.push(...tail);
+
+    return new Response(chunks.join(""), {
+      status: 200,
+      headers: { ...SSE_HEADERS }
+    });
+  }
+
+  /**
+   * Shared per-frame handler for both the streaming and buffer SSE decoders.
+   * Mutates sess (content/thinking accumulators, tool-call maps) and returns
+   * { roleChunk, chunks } — roleChunk is the leading role delta when the
+   * caller hasn't sent one yet (streaming defers it; buffer pushes eagerly).
+   */
+  _cursorFrameToSseEvents(result, sess, { sendRole = false } = {}) {
+    const { responseId, created, model } = sess;
+    const roleChunk = sendRole
+      ? chatChunkSse({ id: responseId, created, model, delta: { role: "assistant", content: "" } })
+      : null;
+    const chunks = [];
+    // Buffer version pushes an eager role chunk into chunks[] before calling here;
+    // streaming defers it — sendRole adds it only when the first content arrives.
+    const roleCounted = sendRole ? 1 : 0;
+
+    if (result.toolCall) {
+      const tc = result.toolCall;
+
+      if (sess.toolCallsMap.has(tc.id)) {
+        // Accumulate arguments for existing tool call
+        const existing = sess.toolCallsMap.get(tc.id);
+        existing.function.arguments += tc.function.arguments;
+        existing.isLast = tc.isLast;
+
+        // Stream the delta arguments
+        if (tc.function.arguments) {
+          sess.emittedToolCallIds.add(tc.id);
+          chunks.push(chatChunkSse({
+            id: responseId, created, model,
+            delta: {
+              tool_calls: [
+                {
+                  index: existing.index,
+                  id: tc.id,
+                  type: "function",
+                  function: {
+                    name: tc.function.name,
+                    arguments: tc.function.arguments
+                  }
+                }
+              ]
+            }
+          }));
+        }
+      } else {
+        // New tool call - assign index and add to map
+        const toolCallIndex = sess.toolCalls.length;
+        sess.finalizedIds.add(tc.id);
+        sess.toolCalls.push({ ...tc, index: toolCallIndex });
+        sess.toolCallsMap.set(tc.id, { ...tc, index: toolCallIndex });
+
+        // Stream initial tool call with name
+        sess.emittedToolCallIds.add(tc.id);
+        chunks.push(chatChunkSse({
+          id: responseId, created, model,
+          delta: {
+            tool_calls: [
+              {
+                index: toolCallIndex,
+                id: tc.id,
+                type: "function",
+                function: {
+                  name: tc.function.name,
+                  arguments: tc.function.arguments
+                }
+              }
+            ]
+          }
+        }));
+      }
+    }
+
+    if (result.text) {
+      sess.totalContent += result.text;
+      chunks.push(chatChunkSse({
+        id: responseId, created, model,
+        delta:
+          roleCounted && chunks.length === 0 && sess.toolCalls.length === 0
+            ? { role: "assistant", content: result.text }
+            : { content: result.text }
+      }));
+    }
+
+    if (isComposerModel(model) && result.thinking) {
+      sess.totalThinking += result.thinking;
+      const visibleContent = visibleComposerContentFromThinking(sess.totalThinking);
+      if (visibleContent.length > sess.emittedComposerThinkingContentLength) {
+        const deltaContent = visibleContent.slice(sess.emittedComposerThinkingContentLength);
+        sess.emittedComposerThinkingContentLength = visibleContent.length;
+        sess.totalContent += deltaContent;
+        chunks.push(chatChunkSse({
+          id: responseId, created, model,
+          delta:
+            roleCounted && chunks.length === 0 && sess.toolCalls.length === 0
+              ? { role: "assistant", content: deltaContent }
+              : { content: deltaContent }
+        }));
+      }
+    }
+
+    return { roleChunk, chunks };
+  }
+
+  /**
+   * Shared stream tail: finalize unconsumed tool calls, emit role placeholder
+   * when nothing was streamed, then the finish chunk + [DONE].
+   */
+  _cursorFinalizeSse(sess) {
+    const { responseId, created, model } = sess;
+    const chunks = [];
+
     // Finalize all remaining tool calls in map (stream may have ended without isLast=true)
-    for (const [id, tc] of toolCallsMap.entries()) {
-      if (!finalizedIds.has(id)) {
-        debugLog(`[CURSOR BUFFER SSE] Finalizing incomplete tool call: ${id}, isLast=${tc.isLast}`);
-        const toolCallIndex = toolCalls.length;
-        toolCalls.push({
+    for (const [id, tc] of sess.toolCallsMap.entries()) {
+      if (!sess.finalizedIds.has(id)) {
+        debugLog(`[CURSOR SSE] Finalizing incomplete tool call: ${id}, isLast=${tc.isLast}`);
+        const toolCallIndex = sess.toolCalls.length;
+        sess.toolCalls.push({
           id: tc.id,
           type: tc.type,
           index: toolCallIndex,
@@ -1054,7 +1301,8 @@ export class CursorExecutor extends BaseExecutor {
         });
 
         // Emit SSE chunk for the finalized tool call if not already emitted
-        if (!emittedToolCallIds.has(tc.id)) {
+        if (!sess.emittedToolCallIds.has(tc.id)) {
+          sess.emittedToolCallIds.add(tc.id);
           chunks.push(chatChunkSse({
             id: responseId, created, model,
             delta: {
@@ -1075,11 +1323,11 @@ export class CursorExecutor extends BaseExecutor {
       }
     }
 
-    if (chunks.length === 0 && toolCalls.length === 0) {
+    if (chunks.length === 0 && sess.toolCalls.length === 0 && (sess.totalContent?.length ?? 0) === 0) {
       chunks.push(chatChunkSse({ id: responseId, created, model, delta: { role: "assistant", content: "" } }));
     }
 
-    const usage = estimateUsage(body, totalContent.length, FORMATS.OPENAI);
+    const usage = estimateUsage(sess.body, sess.totalContent.length, FORMATS.OPENAI);
 
     chunks.push(
       `data: ${JSON.stringify({
@@ -1091,18 +1339,14 @@ export class CursorExecutor extends BaseExecutor {
           {
             index: 0,
             delta: {},
-            finish_reason: toolCalls.length > 0 ? "tool_calls" : "stop"
+            finish_reason: sess.toolCalls.length > 0 ? "tool_calls" : "stop"
           }
         ],
         usage
       })}\n\n`
     );
     chunks.push(SSE_DONE);
-
-    return new Response(chunks.join(""), {
-      status: 200,
-      headers: { ...SSE_HEADERS }
-    });
+    return chunks;
   }
 
   async refreshCredentials() {

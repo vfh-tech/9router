@@ -14,23 +14,23 @@ beforeEach(() => _setDir(tmp));
 afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
 describe("token saver events", () => {
-  it("roundtrips append → read", () => {
-    appendTokenSaverEvent({ saver: "rtk", provider: "claude", applied: true, savedTokens: 100, ts: Date.now() });
+  it("roundtrips append → read", async () => {
+    await appendTokenSaverEvent({ saver: "rtk", provider: "claude", applied: true, savedTokens: 100, ts: Date.now() });
     const all = readTokenSaverEvents();
     expect(all).toHaveLength(1);
     expect(all[0].saver).toBe("rtk");
   });
 
-  it("filters by saver", () => {
-    appendTokenSaverEvent({ saver: "rtk", ts: Date.now() });
-    appendTokenSaverEvent({ saver: "pxpipe", ts: Date.now() });
+  it("filters by saver", async () => {
+    await appendTokenSaverEvent({ saver: "rtk", ts: Date.now() });
+    await appendTokenSaverEvent({ saver: "pxpipe", ts: Date.now() });
     expect(readTokenSaverEvents({ saver: "rtk" })).toHaveLength(1);
   });
 
-  it("aggregates windows and bySaver", () => {
+  it("aggregates windows and bySaver", async () => {
     const now = Date.now();
-    appendTokenSaverEvent({ saver: "rtk", applied: true, savedTokens: 50, ts: now });
-    appendTokenSaverEvent({ saver: "pxpipe", applied: true, savedTokens: 150, ts: now });
+    await appendTokenSaverEvent({ saver: "rtk", applied: true, savedTokens: 50, ts: now });
+    await appendTokenSaverEvent({ saver: "pxpipe", applied: true, savedTokens: 150, ts: now });
     const s = getTokenSaverStats({ timelineDays: 3 });
     expect(s.windows.today.savedTokens).toBe(200);
     expect(s.windows.today.requests).toBe(2);

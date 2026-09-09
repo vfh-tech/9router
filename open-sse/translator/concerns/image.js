@@ -16,6 +16,10 @@ import { lookup } from "node:dns/promises";
 import { Agent } from "undici";
 import { MAX_IMAGE_BYTES, FETCH_TIMEOUT_MS, IMAGE_SIGNATURES, BLOCKED_HOSTS } from "../../config/mediaConfig.js";
 
+// Pooled dispatchers for remote-image prefetch — per-request `new Agent()`
+// plus `close()` meant every image paid a fresh TCP+TLS handshake.
+const imageDispatchers = new Map();
+
 // True if an IPv4/IPv6 address is private/reserved (SSRF target).
 function isPrivateIp(ip) {
   if (!ip) return true;
@@ -88,12 +92,20 @@ export async function fetchImageAsBase64(imageUrl, options = {}) {
   const timeout = signal ? null : setTimeout(() => controller.abort(), timeoutMs);
   const fetchSignal = signal || controller.signal;
 
-  // Pin connect to the validated IP so no second DNS resolution can rebind (TOCTOU fix).
-  const dispatcher = new Agent({
-    connect: { lookup: (_h, _o, cb) => cb(null, [{ address: pinnedIps[0].address, family: pinnedIps[0].family }]) },
-  });
-
   try {
+    // Pin connect to the validated IP so no second DNS resolution can rebind (TOCTOU fix).
+    // ponytail: ceiling = one Agent per (host,IP) pair, no eviction — image hosts
+    // are request-specific so entries age out with the process; upgrade path =
+    // LRU if prefetch volume ever makes the Map a memory concern.
+    const cacheKey = `${url.hostname}|${pinnedIps[0].address}`;
+    let dispatcher = imageDispatchers.get(cacheKey);
+    if (!dispatcher) {
+      dispatcher = new Agent({
+        connect: { lookup: (_h, _o, cb) => cb(null, [{ address: pinnedIps[0].address, family: pinnedIps[0].family }]) },
+      });
+      imageDispatchers.set(cacheKey, dispatcher);
+    }
+
     // redirect:"manual" prevents a public URL redirecting to a private one (SSRF bypass).
     const response = await fetch(imageUrl, { signal: fetchSignal, redirect: "manual", dispatcher });
     if (!response.ok || !response.body) return null;
@@ -119,6 +131,5 @@ export async function fetchImageAsBase64(imageUrl, options = {}) {
     return null;
   } finally {
     if (timeout) clearTimeout(timeout);
-    dispatcher.close().catch(() => {});
   }
 }

@@ -260,8 +260,11 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   if (rtkStats?.hits?.length) emit({ saver: "rtk", applied: true, filters: rtkStats.hits.map((h) => h.filter), hits: rtkStats.hits.length, savedTokens: Math.round((rtkStats.bytesBefore - rtkStats.bytesAfter) / 4) });
 
   // Headroom: optional external proxy compression; fail open if proxy is absent.
+  // ponytail: kept serial with pxpipe below (both reshape translatedBody.messages —
+  // concurrent mutation would corrupt the payload). Hard cap 3s: a misconfigured
+  // (larger) headroomTimeoutMs must not stall TTFB longer than the pxpipe budget.
   const headroomDiagnostics = {};
-  const headroomStats = await compressWithHeadroom(translatedBody, { enabled: tokenSaverEnabled && headroomEnabled, url: headroomUrl, model: upstreamModel, format: finalFormat, compressUserMessages: headroomCompressUserMessages, timeoutMs: headroomTimeoutMs, diagnostics: headroomDiagnostics });
+  const headroomStats = await compressWithHeadroom(translatedBody, { enabled: tokenSaverEnabled && headroomEnabled, url: headroomUrl, model: upstreamModel, format: finalFormat, compressUserMessages: headroomCompressUserMessages, timeoutMs: Math.min(Number(headroomTimeoutMs) || Infinity, 3000), diagnostics: headroomDiagnostics });
   const headroomLine = formatHeadroomLog(headroomStats);
   const headroomSizeLine = formatHeadroomSizeLog(headroomDiagnostics);
   if (headroomLine) {

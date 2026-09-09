@@ -21,9 +21,11 @@ export function createBetterSqliteAdapter(filePath) {
     return stmt;
   }
 
-  // Truncate WAL periodically so file stays small for backup/copy
+  // Keep WAL small without stalling active writers: PASSIVE never blocks
+  // concurrent readers/writers (TRUNCATE would contend with in-flight streams).
+  // TRUNCATE stays on the shutdown path so -wal/-shm files are actually removed.
   const checkpointTimer = setInterval(() => {
-    try { db.pragma("wal_checkpoint(TRUNCATE)"); } catch {}
+    try { db.pragma("wal_checkpoint(PASSIVE)"); } catch {}
   }, CHECKPOINT_INTERVAL_MS);
   if (typeof checkpointTimer.unref === "function") checkpointTimer.unref();
 

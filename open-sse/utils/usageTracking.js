@@ -239,6 +239,10 @@ export function hasValidUsage(usage) {
 export function extractUsage(chunk) {
   if (!chunk || typeof chunk !== "object") return null;
 
+  // Fast bail: every usage-bearing shape carries one of these top-level keys.
+  // Skips the 5-branch walk for ~all text-delta chunks.
+  if (!chunk.type && !chunk.usage && !chunk.usageMetadata && !chunk.done && !chunk.response && !chunk.message) return null;
+
   // Claude format (message_start event): carries input_tokens + cache_read +
   // cache_creation. message_delta later carries only the final output_tokens,
   // so callers must MERGE (mergeUsage), not overwrite, to keep cache counts.

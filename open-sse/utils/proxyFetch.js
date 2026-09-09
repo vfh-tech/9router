@@ -1,9 +1,20 @@
-import { Readable } from "stream";
 import { MEMORY_CONFIG } from "../config/runtimeConfig.js";
+import { Agent as UndiciAgent } from "undici";
 import { dbg } from "./debugLog.js";
 
-const originalFetch = globalThis.fetch;
 const proxyDispatchers = new Map();
+
+// Resolve the underlying fetch safely. This module patches globalThis.fetch
+// with patchedFetch (below), so resolving at call time would recurse into
+// ourselves. Unwrap rule: a global that is NOT our patch (test mock, the
+// untouched native fetch, or ANOTHER proxyFetch instance's patch) is used
+// as-is; our own patch unwraps one level to whatever it replaced at install
+// time. Cross-instance ping-pong is impossible: unwrapping never re-enters
+// a patch — it returns the captured predecessor directly.
+function originalFetch() {
+  const g = globalThis.fetch;
+  return g === patchedFetch ? (patchedFetch.__unpatchedFetch || g) : g;
+}
 
 // ─── TLS fingerprinting via got-scraping (browser-like JA3) ───────────────
 // Disabled: not in use. Kept commented for future re-enable.
@@ -99,6 +110,21 @@ async function tryGotScrapingFetch(url, options) {
 
 // DNS cache — use Map to avoid prototype pollution via malformed hostnames
 const DNS_CACHE = new Map();
+
+// Shared keep-alive dispatcher for direct (no-proxy) requests. Lazy singleton:
+// undici's default keepAliveTimeout is only 4s, so idle sockets between turns
+// get dropped and the next request pays a fresh TCP+TLS handshake. 60s
+// matches typical inter-request gaps in an agent loop.
+let _directDispatcher = null;
+function getDirectDispatcher() {
+  if (!_directDispatcher) {
+    _directDispatcher = new UndiciAgent({
+      keepAliveTimeout: 60_000,
+      keepAliveMaxTimeout: 120_000,
+    });
+  }
+  return _directDispatcher;
+}
 const MITM_BYPASS_HOSTS = [
   "cloudcode-pa.googleapis.com",
   "daily-cloudcode-pa.googleapis.com",
@@ -108,9 +134,6 @@ const MITM_BYPASS_HOSTS = [
   "api2.cursor.sh",
 ];
 const GOOGLE_DNS_SERVERS = ["8.8.8.8", "8.8.4.4"];
-const HTTPS_PORT = 443;
-const HTTP_SUCCESS_MIN = 200;
-const HTTP_SUCCESS_MAX = 300;
 
 function normalizeString(value) {
   if (value === undefined || value === null) return "";
@@ -233,62 +256,46 @@ async function getDispatcher(proxyUrl) {
 }
 
 /**
- * Create HTTPS request with manual socket connection (bypass DNS)
+ * Per-host undici dispatchers for MITM bypass. Connect is pinned to the
+ * Google-DNS-resolved IP (DNS-bypass against /etc/hosts MITM) while SNI + cert
+ * validation still use the hostname — undici handles both, and the pooled
+ * agent reuses TCP+TLS across requests instead of hand-rolling a fresh socket.
+ * Cached entries rebuild when the resolved IP changes (DNS refresh), so an
+ * anycast endpoint moving IPs is followed, not stuck on the old pin.
+ * ponytail: ceiling = per-host Agent cache, no size bound (MITM_BYPASS_HOSTS is
+ * a small static list; upgrade path = LRU if the list ever becomes dynamic).
  */
-async function createBypassRequest(parsedUrl, realIP, options) {
-  const httpsModule = await import("https");
-  const netModule = await import("net");
-  // CJS modules expose exports via .default in ESM dynamic import context
-  const https = httpsModule.default ?? httpsModule;
-  const net = netModule.default ?? netModule;
+const bypassDispatchers = new Map();
 
-  return new Promise((resolve, reject) => {
-    const socket = new net.Socket();
-
-    socket.connect(HTTPS_PORT, realIP, () => {
-      const reqOptions = {
-        socket,
-        // SNI + cert hostname are validated against the hostname the caller
-        // asked for, not the IP we connected to. This keeps the DNS-bypass
-        // (avoiding /etc/hosts MITM) while still rejecting on-path attackers
-        // that present a different cert. The MITM_BYPASS_HOSTS targets are
-        // all public-CA-issued (Google / GitHub / AWS / Cursor) so default
-        // verification works without any extra trust store.
-        servername: parsedUrl.hostname,
-        path: parsedUrl.pathname + parsedUrl.search,
-        method: options.method || "POST",
-        headers: {
-          ...options.headers,
-          Host: parsedUrl.hostname,
-        },
-      };
-
-      const req = https.request(reqOptions, (res) => {
-        const response = {
-          ok: res.statusCode >= HTTP_SUCCESS_MIN && res.statusCode < HTTP_SUCCESS_MAX,
-          status: res.statusCode,
-          statusText: res.statusMessage,
-          headers: new Map(Object.entries(res.headers)),
-          body: Readable.toWeb(res),
-          text: async () => {
-            const chunks = [];
-            for await (const chunk of res) chunks.push(chunk);
-            return Buffer.concat(chunks).toString();
-          },
-          json: async () => JSON.parse(await response.text()),
-        };
-        resolve(response);
-      });
-
-      req.on("error", reject);
-      if (options.body) {
-        req.write(typeof options.body === "string" ? options.body : JSON.stringify(options.body));
-      }
-      req.end();
-    });
-
-    socket.on("error", reject);
+async function getBypassDispatcher(hostname, realIP) {
+  const cached = bypassDispatchers.get(hostname);
+  // Rebuild if the pinned IP changed (DNS refresh): an anycast endpoint moving
+  // to a new IP must not keep the dispatcher dialing the old one forever.
+  if (cached && cached.realIP === realIP) return cached.dispatcher;
+  if (cached) {
+    cached.dispatcher.close().catch(() => {});
+  }
+  const { Agent } = await import("undici");
+  const dispatcher = new Agent({
+    connect: {
+      // Pin connect to the validated IP so no second DNS resolution can rebind (TOCTOU fix).
+      lookup: (_h, _o, cb) => cb(null, [{ address: realIP, family: 4 }]),
+      // SNI + cert hostname stay the caller's hostname (undici default servername),
+      // and MITM_BYPASS_HOSTS targets are all public-CA-issued, so default
+      // verification rejects on-path attackers without any extra trust store.
+      servername: hostname,
+    },
   });
+  bypassDispatchers.set(hostname, { realIP, dispatcher });
+  return dispatcher;
+}
+
+/**
+ * HTTPS request with pinned-IP connection (bypass DNS), pooled via undici.
+ */
+async function createBypassRequest(targetUrl, realIP, options) {
+  const dispatcher = await getBypassDispatcher(new URL(targetUrl).hostname, realIP);
+  return originalFetch()(targetUrl, { ...options, dispatcher });
 }
 
 export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
@@ -303,7 +310,7 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
       "x-relay-target": `${parsed.protocol}//${parsed.host}`,
       "x-relay-path": `${parsed.pathname}${parsed.search}`,
     };
-    return originalFetch(vercelRelayUrl, { ...options, headers: relayHeaders });
+    return originalFetch()(vercelRelayUrl, { ...options, headers: relayHeaders });
   }
 
   const connectionProxyUrl = resolveConnectionProxyUrl(targetUrl, proxyOptions);
@@ -316,7 +323,7 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
       // Proxy resolves DNS externally (not affected by /etc/hosts) — use proxy directly
       try {
         const dispatcher = await getDispatcher(proxyUrl);
-        return await originalFetch(url, { ...options, dispatcher });
+        return await originalFetch()(url, { ...options, dispatcher });
       } catch (proxyError) {
         if (proxyOptions?.strictProxy === true) {
           throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`);
@@ -324,11 +331,12 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
         console.warn(`[ProxyFetch] Proxy failed, falling back to direct bypass: ${proxyError.message}`);
       }
     }
-    // No proxy — manually resolve real IP to bypass DNS spoof
+    // No proxy — resolve real IP once, then pin connections to it via a pooled
+    // per-host dispatcher (bypasses /etc/hosts MITM without fresh TLS per request)
     try {
       const parsedUrl = new URL(targetUrl);
       const realIP = await resolveRealIP(parsedUrl.hostname);
-      if (realIP) return await createBypassRequest(parsedUrl, realIP, options);
+      if (realIP) return await createBypassRequest(targetUrl, realIP, options);
     } catch (error) {
       console.warn(`[ProxyFetch] MITM bypass failed: ${error.message}`);
     }
@@ -337,20 +345,23 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
   if (proxyUrl) {
     try {
       const dispatcher = await getDispatcher(proxyUrl);
-      return await originalFetch(url, { ...options, dispatcher });
+      return await originalFetch()(url, { ...options, dispatcher });
     } catch (proxyError) {
       // If strictProxy is enabled, fail hard instead of falling back to direct
       if (proxyOptions?.strictProxy === true) {
         throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`);
       }
       console.warn(`[ProxyFetch] Proxy failed, falling back to direct: ${proxyError.message}`);
-      return originalFetch(url, options);
+      return originalFetch()(url, { ...options, dispatcher: getDirectDispatcher() });
     }
   }
 
-  // got-scraping disabled — use native fetch directly
-  // (Re-enable per-host by wrapping with tryGotScrapingFetch when needed)
-  return originalFetch(url, options);
+  // got-scraping disabled — use the shared keep-alive dispatcher directly.
+  // (Re-enable per-host by wrapping with tryGotScrapingFetch when needed.)
+  // ponytail: undici's default keepAliveTimeout is 4s — idle sockets between
+  // turns get dropped and the next request pays a fresh TCP+TLS handshake.
+  // 60s matches typical inter-request gaps in an agent loop.
+  return originalFetch()(url, { ...options, dispatcher: getDirectDispatcher() });
 }
 
 /**
@@ -360,8 +371,15 @@ async function patchedFetch(url, options = {}) {
   return proxyAwareFetch(url, options, null);
 }
 
-// Idempotency guard — only patch once to avoid wrapping multiple times
+// Idempotency guard — only patch once to avoid wrapping multiple times.
+// Step down through any existing patch instances BEFORE capturing, so
+// __unpatchedFetch always points at a real (non-patch) fetch — a test mock
+// or the native fetch — never at another wrapper. This is what keeps
+// originalFetch() free of cross-instance ping-pong under vi.resetModules.
 if (globalThis.fetch !== patchedFetch) {
+  let base = globalThis.fetch;
+  while (base && base.__unpatchedFetch) base = base.__unpatchedFetch;
+  patchedFetch.__unpatchedFetch = base;
   globalThis.fetch = patchedFetch;
 }
 
