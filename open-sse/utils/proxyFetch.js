@@ -11,9 +11,15 @@ const proxyDispatchers = new Map();
 // as-is; our own patch unwraps one level to whatever it replaced at install
 // time. Cross-instance ping-pong is impossible: unwrapping never re-enters
 // a patch — it returns the captured predecessor directly.
+// Re-entrancy depth: a foreign wrapper (a test stub that delegates to
+// realFetch, which is our patch) is not ours, so returning it would recurse
+// forever. While we are inside a patched call, resolve to the captured
+// predecessor instead.
+let fetchDepth = 0;
 function originalFetch() {
   const g = globalThis.fetch;
-  return g === patchedFetch ? (patchedFetch.__unpatchedFetch || g) : g;
+  if (g === patchedFetch || fetchDepth > 0) return patchedFetch.__unpatchedFetch || g;
+  return g;
 }
 
 // ─── TLS fingerprinting via got-scraping (browser-like JA3) ───────────────
@@ -124,6 +130,21 @@ function getDirectDispatcher() {
     });
   }
   return _directDispatcher;
+}
+
+const TLS_CERT_ERRORS = new Set([
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "UNABLE_TO_GET_ISSUER_CERT",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "CERT_HAS_EXPIRED",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+]);
+
+function isTlsCertError(err) {
+  const code = err?.cause?.code || err?.code;
+  return TLS_CERT_ERRORS.has(code);
 }
 const MITM_BYPASS_HOSTS = [
   "cloudcode-pa.googleapis.com",
@@ -249,11 +270,12 @@ function resolveConnectionProxyUrl(targetUrl, proxyOptions) {
 /**
  * Create proxy dispatcher lazily (undici-compatible)
  */
-async function getDispatcher(proxyUrl) {
+async function getDispatcher(proxyUrl, insecure = false) {
   const normalized = normalizeProxyUrl(proxyUrl);
-  if (!normalized) return null;
+  if (!normalized && !insecure) return null;
 
-  if (!proxyDispatchers.has(normalized)) {
+  const key = `${normalized || "direct"}::${insecure ? "insecure" : "secure"}`;
+  if (!proxyDispatchers.has(key)) {
     // Evict oldest entry if max size reached
     if (proxyDispatchers.size >= MEMORY_CONFIG.proxyDispatchersMaxSize) {
       const oldestKey = proxyDispatchers.keys().next().value;
@@ -265,11 +287,41 @@ async function getDispatcher(proxyUrl) {
       }
       proxyDispatchers.delete(oldestKey);
     }
-    const { ProxyAgent } = await import("undici");
-    proxyDispatchers.set(normalized, new ProxyAgent({ uri: normalized }));
+    const { Agent, ProxyAgent } = await import("undici");
+    const connect = insecure ? { rejectUnauthorized: false } : undefined;
+    const dispatcher = normalized
+      ? new ProxyAgent({ uri: normalized, ...(insecure ? { requestTls: connect } : {}) })
+      : new Agent({ connect });
+    proxyDispatchers.set(key, dispatcher);
   }
 
-  return proxyDispatchers.get(normalized);
+  return proxyDispatchers.get(key);
+}
+
+async function fetchWithTlsFallback(url, options, proxyUrl, insecure = false) {
+  const dispatcher = proxyUrl || insecure
+    ? await getDispatcher(proxyUrl, insecure)
+    : getDirectDispatcher();
+  return await originalFetch()(url, dispatcher ? { ...options, dispatcher } : options);
+}
+
+// Retry without certificate verification only when STRICT_SSL is unset — covers
+// self-signed corporate/antivirus MITM roots. A locked streaming body cannot be
+// replayed, so it is never retried.
+async function fetchWithTlsRetry(url, options, proxyUrl) {
+  try {
+    return await fetchWithTlsFallback(url, options, proxyUrl);
+  } catch (err) {
+    const isStrictSsl = process.env.STRICT_SSL === "true" || process.env.STRICT_SSL === "1";
+    if (!isStrictSsl && isTlsCertError(err)) {
+      if (options.body && typeof options.body.getReader === "function" && options.body.locked) {
+        throw err;
+      }
+      console.warn(`[ProxyFetch] TLS cert verification failed (${err.cause?.code || err.code}), retrying with insecure TLS: ${url}`);
+      return await fetchWithTlsFallback(url, options, proxyUrl, true);
+    }
+    throw err;
+  }
 }
 
 /**
@@ -322,8 +374,11 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
   const vercelRelayUrl = normalizeString(proxyOptions?.vercelRelayUrl);
   if (vercelRelayUrl) {
     const parsed = new URL(targetUrl);
+    const baseHeaders = options.headers instanceof Headers
+      ? Object.fromEntries(options.headers.entries())
+      : { ...(options.headers || {}) };
     const relayHeaders = {
-      ...options.headers,
+      ...baseHeaders,
       "x-relay-target": `${parsed.protocol}//${parsed.host}`,
       "x-relay-path": `${parsed.pathname}${parsed.search}`,
     };
@@ -339,8 +394,7 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
     if (proxyUrl) {
       // Proxy resolves DNS externally (not affected by /etc/hosts) — use proxy directly
       try {
-        const dispatcher = await getDispatcher(proxyUrl);
-        return await originalFetch()(url, { ...options, dispatcher });
+        return await fetchWithTlsRetry(url, options, proxyUrl);
       } catch (proxyError) {
         if (proxyOptions?.strictProxy === true) {
           throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`);
@@ -361,31 +415,49 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
 
   if (proxyUrl) {
     try {
-      const dispatcher = await getDispatcher(proxyUrl);
-      return await originalFetch()(url, { ...options, dispatcher });
+      return await fetchWithTlsRetry(url, options, proxyUrl);
     } catch (proxyError) {
       // If strictProxy is enabled, fail hard instead of falling back to direct
       if (proxyOptions?.strictProxy === true) {
         throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`);
       }
       console.warn(`[ProxyFetch] Proxy failed, falling back to direct: ${proxyError.message}`);
-      return originalFetch()(url, { ...options, dispatcher: getDirectDispatcher() });
+      return fetchWithTlsFallback(url, options, null);
     }
   }
 
-  // got-scraping disabled — use the shared keep-alive dispatcher directly.
-  // (Re-enable per-host by wrapping with tryGotScrapingFetch when needed.)
-  // ponytail: undici's default keepAliveTimeout is 4s — idle sockets between
-  // turns get dropped and the next request pays a fresh TCP+TLS handshake.
-  // 60s matches typical inter-request gaps in an agent loop.
-  return originalFetch()(url, { ...options, dispatcher: getDirectDispatcher() });
+  // Strict mode means "never leave over the direct IP". Reaching here with a
+  // proxy configured but unresolved is exactly that case — an inactive or
+  // empty pool, or every proxy removed — so refuse instead of silently
+  // exposing the real address (#4333). The catch blocks above only cover a
+  // proxy that was actually tried.
+  //
+  // Gate on a proxy being *intended*: callers like the Qoder executor set
+  // strictProxy to mean "do not replay this request directly if the proxy
+  // fails" (a replayed COSY signature returns 403), not "a proxy is required".
+  // With nothing configured they must keep working.
+  const proxyIntended = proxyOptions?.proxyPoolId
+    || proxyOptions?.enabled === true
+    || proxyOptions?.connectionProxyEnabled === true
+    || !!normalizeString(proxyOptions?.url ?? proxyOptions?.connectionProxyUrl);
+  if (proxyOptions?.strictProxy === true && proxyIntended) {
+    throw new Error("[ProxyFetch] Proxy required but none resolved (strictProxy=true)");
+  }
+
+  // Direct path uses the shared keep-alive dispatcher (see getDirectDispatcher).
+  return fetchWithTlsFallback(url, options, null);
 }
 
 /**
  * Patched global fetch with env-proxy support and MITM DNS bypass
  */
 async function patchedFetch(url, options = {}) {
-  return proxyAwareFetch(url, options, null);
+  fetchDepth++;
+  try {
+    return await proxyAwareFetch(url, options, null);
+  } finally {
+    fetchDepth--;
+  }
 }
 
 // Idempotency guard — only patch once to avoid wrapping multiple times.

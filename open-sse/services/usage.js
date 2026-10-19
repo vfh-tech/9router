@@ -4,21 +4,26 @@
 
 import { getGitHubUsage } from "./usage/github.js";
 import { getGeminiUsage, getAntigravityUsage } from "./usage/google.js";
-import { getClaudeUsage } from "./usage/claude.js";
+import { getClaudeUsage, consumeClaudeResetGrant } from "./usage/claude.js";
 import { getCodexUsage, consumeCodexRateLimitResetCredit, getCodexRateLimitResetCredits } from "./usage/codex.js";
 
-export { consumeCodexRateLimitResetCredit, getCodexRateLimitResetCredits };
+export { consumeCodexRateLimitResetCredit, getCodexRateLimitResetCredits, consumeClaudeResetGrant };
 import { getKiroUsage } from "./usage/kiro.js";
 import { getMiniMaxUsage } from "./usage/minimax.js";
+import { getMiniMaxCodeUsage } from "./minimaxCodeUsage.js";
 import { getCodeBuddyCnUsage, getCodeBuddyIntlUsage } from "./usage/codebuddy-cn.js";
 import { getGrokCliUsage } from "./usage/grok-cli.js";
 import { getKimiUsage } from "./usage/kimi.js";
 import { getDeepseekUsage } from "./usage/deepseek.js";
 import { getOpenCodeGoUsage } from "./usage/opencode-go.js";
+import { getOpenCodeZenUsage } from "./usage/opencode-zen.js";
 import { getGroqUsage } from "./usage/groq.js";
 import { getZedUsage } from "./usage/zed.js";
+import { getXiaomiMimoUsage } from "./usage/xiaomi-mimo.js";
+import { getCursorUsage } from "./usage/cursor.js";
 import { resolveQoderCredentials } from "./qoderModels.js";
 import { getGlmUsage } from "./usage/glm.js";
+import { getCommandCodeUsage } from "./usage/commandcode.js";
 import {
   getIflowUsage,
   getOllamaUsage,
@@ -39,49 +44,39 @@ const USAGE_HANDLERS = {
   claude: (c) => getClaudeUsage(c.accessToken, c.proxyOptions, { force: c.force }),
   codex: (c) => getCodexUsage(c.accessToken, c.proxyOptions),
   kiro: (c) => getKiroUsage(c.accessToken, c.providerSpecificData, c.proxyOptions),
-  qoder: async (c) => {
-    // PAT (pt-...) connections must be exchanged to a job token before the
-    // quota endpoint accepts them.
-    const resolved = await resolveQoderCredentials(c, c.proxyOptions).catch(() => null);
-    return getQoderUsage(resolved?.accessToken || c.accessToken, c.proxyOptions);
-  },
+  qoder: (c) => getQoderUsageFor(c),
+  "qoder-cn": (c) => getQoderUsageFor(c),
   iflow: (c) => getIflowUsage(c.accessToken),
   ollama: (c) => getOllamaUsage(c.apiKey, c.providerSpecificData, c.proxyOptions),
-  glm: (c) => getGlmUsage(c.apiKey, c.provider, c.proxyOptions),
-  "glm-cn": (c) => getGlmUsage(c.apiKey, c.provider, c.proxyOptions),
+  // OAuth connections store the coding-plan key on accessToken (no apiKey)
+  glm: (c) => getGlmUsage(c.apiKey || c.accessToken, c.provider, c.proxyOptions),
+  "glm-cn": (c) => getGlmUsage(c.apiKey || c.accessToken, c.provider, c.proxyOptions),
   minimax: (c) => getMiniMaxUsage(c.apiKey, c.provider, c.proxyOptions),
   "minimax-cn": (c) => getMiniMaxUsage(c.apiKey, c.provider, c.proxyOptions),
+  // MiniMax Code (mcode) credits lane — signed account API + plan windows
+  "minimax-code": (c) => getMiniMaxCodeUsage(c),
+  "minimax-code-global": (c) => getMiniMaxCodeUsage(c),
   "vercel-ai-gateway": (c) => getVercelAiGatewayUsage(c.apiKey, c.proxyOptions),
   "codebuddy-cn": (c) => getCodeBuddyCnUsage(c.accessToken, c.apiKey, c.providerSpecificData, c.proxyOptions),
   "codebuddy-intl": (c) => getCodeBuddyIntlUsage(c.accessToken, c.apiKey, c.providerSpecificData, c.proxyOptions),
   "grok-cli": (c) => getGrokCliUsage(c.accessToken, c.providerSpecificData, c.proxyOptions),
   kimi: (c) => getKimiUsage(c.accessToken, c.apiKey, c.proxyOptions, c.providerSpecificData),
   "opencode-go": (c) => getOpenCodeGoUsage(c.apiKey, c.proxyOptions),
+  "opencode-zen": (c) => getOpenCodeZenUsage(c.apiKey, c.proxyOptions),
   deepseek: (c) => getDeepseekUsage(c.apiKey, c.proxyOptions),
   groq: (c) => getGroqUsage(c.apiKey, c.proxyOptions),
   zed: (c) => getZedUsage(c.accessToken, c.providerSpecificData, c.proxyOptions),
-  // CommandCode has no usage REST endpoint. Its 429 body names the reset window
-  // ("Resets in 2h 41m"); the executor's parseError persists it as rateLimitedUntil.
-  commandcode: (c) => {
-    const untilMs = c.rateLimitedUntil ? new Date(c.rateLimitedUntil).getTime() : 0;
-    if (untilMs > Date.now()) {
-      return {
-        message: `Usage limit reached. Resets in ${formatRemaining(untilMs)}.`,
-        plan: null,
-        quotas: [{ name: "Session window", used: 1, total: 1, resetAt: c.rateLimitedUntil }],
-      };
-    }
-    return { message: "No active usage limit. Usage tracked per request." };
-  },
+  "xiaomi-mimo": (c) => getXiaomiMimoUsage(c.accessToken, c.providerSpecificData, c.proxyOptions),
+  commandcode: (c) => getCommandCodeUsage(c.apiKey, c.proxyOptions),
+  cursor: (c) => getCursorUsage(c.accessToken, c.providerSpecificData, c.proxyOptions),
 };
 
-function formatRemaining(untilMs) {
-  const sec = Math.max(0, Math.ceil((untilMs - Date.now()) / 1000));
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  if (h > 0) return `${h}h ${m}m`;
-  if (m > 0) return `${m}m`;
-  return `${sec}s`;
+// Qoder intl/CN share one usage path: PATs must be exchanged to a job token
+// before the quota endpoint accepts them, and the quota URL comes from the
+// provider's own registry usage block (region-correct via c.provider).
+async function getQoderUsageFor(c) {
+  const resolved = await resolveQoderCredentials(c, c.proxyOptions).catch(() => null);
+  return getQoderUsage(resolved?.accessToken || c.accessToken, c.proxyOptions, c.provider || "qoder");
 }
 
 export async function getUsageForProvider(connection, proxyOptions = null, options = {}) {
