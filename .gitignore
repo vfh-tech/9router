@@ -119,3 +119,6 @@ skills/*
 
 # Generated runtime assets
 storage/
+
+# Impeccable design-run artifacts (critique snapshots, detector config)
+.impeccable/
