@@ -188,6 +188,52 @@ function normalizeStickyLimit(stickyLimit) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
 }
 
+export function normalizeComboWeights(models, rawWeights) {
+  if (!rawWeights || typeof rawWeights !== "object" || Array.isArray(rawWeights)) return null;
+  if (!Array.isArray(models) || models.length === 0) return null;
+
+  const weights = {};
+  let hasPositive = false;
+  let allOne = true;
+  for (const m of models) {
+    const n = Number(rawWeights[m]);
+    const w = Number.isFinite(n) ? Math.min(1000, Math.max(0, Math.floor(n))) : 1;
+    weights[m] = w;
+    if (w > 0) hasPositive = true;
+    if (w !== 1) allOne = false;
+  }
+  if (!hasPositive || allOne) return null;
+  return weights;
+}
+
+export function getComboWeights(comboStrategies, comboName) {
+  return comboStrategies?.[comboName]?.weights || null;
+}
+
+export function buildWeightedCycle(models, weights) {
+  const seats = models.filter((m) => weights[m] > 0);
+  if (seats.length === 0) return [];
+  const total = seats.reduce((sum, m) => sum + weights[m], 0);
+  const score = seats.map(() => 0);
+  const cycle = [];
+  for (let tick = 0; tick < total; tick++) {
+    cycle.push(seats[smoothTick(seats, weights, score, total)]);
+  }
+  return cycle;
+}
+
+// One tick of smooth weighted round-robin: raise every seat by its weight, take
+// the highest, then debit the total so the next winner is a different seat.
+function smoothTick(seats, weights, score, total) {
+  let head = 0;
+  for (let i = 0; i < seats.length; i++) {
+    score[i] += weights[seats[i]];
+    if (score[i] > score[head]) head = i;
+  }
+  score[head] -= total;
+  return head;
+}
+
 function rotateModelsFromIndex(models, currentIndex) {
   const rotatedModels = [...models];
   for (let i = 0; i < currentIndex; i++) {
@@ -205,9 +251,14 @@ function rotateModelsFromIndex(models, currentIndex) {
  * @param {number|string} [stickyLimit=1] - Requests per combo model before switching
  * @returns {string[]} Rotated models array
  */
-export function getRotatedModels(models, comboName, strategy, stickyLimit = 1) {
+export function getRotatedModels(models, comboName, strategy, stickyLimit = 1, comboWeights = null) {
   if (!models || models.length <= 1 || strategy !== "round-robin") {
     return models;
+  }
+
+  const weights = normalizeComboWeights(models, comboWeights);
+  if (weights) {
+    return advanceWeightedRotation(models, comboName, weights, normalizeStickyLimit(stickyLimit));
   }
 
   const rotationKey = comboName || "__default__";
@@ -234,6 +285,54 @@ export function getRotatedModels(models, comboName, strategy, stickyLimit = 1) {
   }
 
   return rotatedModels;
+}
+
+function advanceWeightedRotation(models, comboName, weights, stickyLimit) {
+  const rotationKey = comboName || "__default__";
+  const sig = models.join("|") + "::" + models.map((m) => weights[m]).join(",");
+  const existing = comboRotationState.get(rotationKey);
+  const usable = existing && typeof existing === "object" && existing.sig === sig && Array.isArray(existing.current);
+
+  const state = usable
+    ? existing
+    : { sig, current: models.map(() => 0), lastSeat: -1, consecutiveUseCount: 0 };
+
+  const positive = [];
+  for (let i = 0; i < models.length; i++) {
+    if (weights[models[i]] > 0) positive.push(i);
+  }
+  const seats = positive.map((i) => models[i]);
+  const total = seats.reduce((sum, m) => sum + weights[m], 0);
+
+  let head;
+  if (state.lastSeat >= 0 && state.consecutiveUseCount < stickyLimit && positive.includes(state.lastSeat)) {
+    head = state.lastSeat;
+    state.consecutiveUseCount += 1;
+  } else {
+    const score = positive.map((i) => state.current[i]);
+    head = positive[smoothTick(seats, weights, score, total)];
+    for (let k = 0; k < positive.length; k++) state.current[positive[k]] = score[k];
+    state.lastSeat = head;
+    state.consecutiveUseCount = 1;
+  }
+
+  comboRotationState.set(rotationKey, state);
+  return orderSeatsByWeights(models, weights, state.current, head);
+}
+
+function orderSeatsByWeights(models, weights, current, head) {
+  const ranked = [];
+  const excluded = [];
+  for (let i = 0; i < models.length; i++) {
+    if (weights[models[i]] > 0) ranked.push(i); else excluded.push(i);
+  }
+  ranked.sort((a, b) => {
+    if (a === head) return b === head ? 0 : -1;
+    if (b === head) return 1;
+    const diff = (current[b] + weights[models[b]]) - (current[a] + weights[models[a]]);
+    return diff || a - b;
+  });
+  return [...ranked, ...excluded].map((i) => models[i]);
 }
 
 /**
@@ -315,11 +414,13 @@ export function isZeroContentResponse(data) {
  * @param {string} [options.comboName] - Name of the combo (for round-robin tracking)
  * @param {string} [options.comboStrategy] - Strategy: "fallback" or "round-robin"
  * @param {number|string} [options.comboStickyLimit=1] - Requests per combo model before switching
+ * @param {boolean} [options.autoSwitch=true] - Reorder by request capabilities
+ * @param {Object|null} [options.comboWeights=null] - Per-model weight map
  * @returns {Promise<Response>}
  */
-export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true }) {
+export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true, comboWeights = null }) {
   // Apply rotation strategy if enabled
-  let rotatedModels = getRotatedModels(models, comboName, comboStrategy, comboStickyLimit);
+  let rotatedModels = getRotatedModels(models, comboName, comboStrategy, comboStickyLimit, comboWeights);
 
   // Auto-switch: float models that satisfy the request's required capabilities to the front.
   if (autoSwitch) {
