@@ -1,187 +1,134 @@
 # Docker
 
-Run 9Router in a container. Published image: [`decolua/9router`](https://hub.docker.com/r/decolua/9router) — multi-platform `linux/amd64` + `linux/arm64`.
+Deployment fork `9router-vfh`. Upstream `decolua/9router` tetap jadi acuan, tapi image
+di build lokal dari `Dockerfile` di repo ini.
 
----
+Angka di dokumen ini diukur dari image dan container yang jalan, bukan estimasi.
 
-# 👤 For Users
+## Isi image
 
-## Quick start
+`9router-vfh:latest` = **1.28 GiB** (1.34 GB desimal).
 
-```bash
-docker run -d \
-  -p 2222:2222 \
-  -v "$HOME/.9router:/app/data" \
-  -e DATA_DIR=/app/data \
-  --name 9router \
-  decolua/9router:latest
-```
+| Layer | Ukuran |
+|---|---|
+| Base `node:22.23.4-alpine` (termasuk adduser node) | ~481 MB |
+| `apk add su-exec ffmpeg` | 133 MB |
+| `chown -R node:node /app` (layer duplikat) | 343 MB |
+| `node_modules/next` | 219 MB |
+| `.next/standalone` | 91.9 MB |
+| `node_modules/sql.js` | 31.2 MB |
+| `node_modules/@img` + `sharp` | 18.6 MB |
+| lazy-runtime (`wreq-js`, `playwright-core`) | 23.8 MB |
+| `.next/static` + `public` + `open-sse` | 9.3 MB + 4.4 MB + 4.4 MB |
 
-App listens on port `2222`. Open: http://localhost:2222
+Di dalam container: `/app` 330 MB, dan 291 MB di antaranya `node_modules`.
 
-## Manage container
+Dua layer masih bisa dipangkas tapi **belum** dilakukan di `Dockerfile`:
 
-```bash
-docker logs -f 9router        # view logs
-docker stop 9router           # stop
-docker start 9router          # start again
-docker rm -f 9router          # remove
-```
+- `chown -R` di baris 92 menyalin ulang seluruh `/app` (343 MB). `COPY --chown` akan
+  menghapusnya.
+- `sharp` dan `@img` (18.6 MB) tidak pernah dimuat karena `images.unoptimized: true`.
+- `sql.js` hanya butuh `dist/sql-wasm.{js,wasm}`, sisanya emscripten variant (31.2 MB
+  menjadi ~0.7 MB).
 
-## Data persistence
-
-```bash
--v "$HOME/.9router:/app/data" \
--e DATA_DIR=/app/data
-```
-
-Without `DATA_DIR`, the app falls back to `~/.9router/` (macOS/Linux) or `%APPDATA%\9router\` (Windows). In the container, `DATA_DIR=/app/data` makes the bind mount work.
-
-Data layout under `$DATA_DIR/`:
-
-```text
-$DATA_DIR/
-├── db/
-│   ├── data.sqlite       # main SQLite database
-│   └── backups/          # auto backups
-└── ...                   # certs, logs, runtime configs
-```
-
-Host path: `$HOME/.9router/db/data.sqlite`
-Container path: `/app/data/db/data.sqlite`
-
-## Optional env vars
+## Build & jalankan
 
 ```bash
-docker run -d \
-  -p 2222:2222 \
-  -v "$HOME/.9router:/app/data" \
-  -e DATA_DIR=/app/data \
-  -e PORT=2222 \
-  -e HOSTNAME=0.0.0.0 \
-  -e DEBUG=true \
-  --name 9router \
-  decolua/9router:latest
+cp .env.example .env.docker      # lalu isi secret, jangan pakai placeholder
+docker compose up -d --build
 ```
 
-## Optional Headroom sidecar
+`.env` di repo ini berisi placeholder (`JWT_SECRET=change-me-...`). Compose membaca
+`.env.docker`. Kalau `.env` yang terpakai, dashboard dan sesi berjalan dengan secret
+placeholder, dan `API_KEY_SECRET` jatuh ke default kode.
 
-The 9Router image does not bundle Python or Headroom. To use Headroom in Docker, run it as a separate service and point 9Router at that proxy:
+Port bind ke loopback (`127.0.0.1:2222`) karena container menyimpan kredensial provider.
+Untuk akses LAN, pasang reverse proxy di depan.
 
-```yaml
-services:
-  9router:
-    image: decolua/9router:latest
-    ports:
-      - "2222:2222"
-    volumes:
-      - "$HOME/.9router:/app/data"
-    environment:
-      DATA_DIR: /app/data
-      HEADROOM_URL: http://headroom:8787
-    depends_on:
-      - headroom
-
-  headroom:
-    image: ghcr.io/chopratejas/headroom:latest
-    ports:
-      - "8787:8787"
-```
-
-In the dashboard, open `Endpoint` → `Token Saver` → `Headroom`, confirm the URL is `http://headroom:8787`, recheck status, then enable Headroom.
-
-If Headroom runs on the Docker host instead of as a sidecar, use `http://host.docker.internal:8787` on macOS/Windows. On Linux, add `--add-host=host.docker.internal:host-gateway` or the equivalent compose `extra_hosts` entry.
-
-## Update to latest
+Cek status:
 
 ```bash
-docker pull decolua/9router:latest
-docker rm -f 9router
-# re-run the quick start command
+docker compose ps
+curl -s http://127.0.0.1:2222/api/health     # {"ok":true}
+docker logs -f 9router-vfh
 ```
 
-To pin a specific version instead of following `latest`, use a numbered image tag:
+## Env
+
+`.env.docker` (gitignored) wajib diisi:
+
+| Var | Catatan |
+|---|---|
+| `JWT_SECRET` | min 32 byte acak, dipakai cookie sesi dashboard |
+| `INITIAL_PASSWORD` | password dashboard pertama |
+| `API_KEY_SECRET` | HMAC pembentuk CRC key `/v1/*`; default kode dipakai bila kosong |
+| `MACHINE_ID_SALT` | salt machine-id; default kode dipakai bila kosong |
+
+Generate cepat:
 
 ```bash
-docker pull decolua/9router:0.5.81
+node -e 'const c=require("crypto");console.log("JWT_SECRET="+c.randomBytes(32).toString("hex"));
+console.log("API_KEY_SECRET="+c.randomBytes(24).toString("hex"));
+console.log("MACHINE_ID_SALT="+c.randomBytes(16).toString("hex"));
+console.log("INITIAL_PASSWORD="+c.randomBytes(12).toString("base64url"))'
 ```
 
----
+`API_KEY_SECRET` mengubah CRC pada key baru. Key lama tetap valid karena
+`validateApiKey` mencocokkan string key di tabel `apiKeys`, bukan menghitung ulang CRC.
 
-# 🛠 For Developers
+## Data
 
-## Build image locally (test)
+Volume named `9router-vfh-data` → `/app/data`.
 
 ```bash
-docker build -t 9router .
-
-docker run --rm -p 2222:2222 \
-  -v "$HOME/.9router:/app/data" \
-  -e DATA_DIR=/app/data \
-  9router
+docker volume inspect 9router-vfh-data --format '{{.Mountpoint}}'
 ```
 
-The Dockerfile uses the official Alpine and npm registries by default. Regional mirrors can be supplied when needed:
+Isi setelah first run: `db/data.sqlite` (+ `-wal`/`-shm`), `db/backups/`, `machine-id`,
+`model-catalog.json`, `model-catalog-raw.json`, `logs/mitm/`, `token-saver/`.
+`auth/cli-secret` baru dibuat saat CLI token pertama dipakai.
+
+Backup:
 
 ```bash
-docker build \
-  --build-arg ALPINE_MIRROR=mirrors.aliyun.com \
-  --build-arg NPM_REGISTRY=https://registry.npmmirror.com/ \
-  -t 9router .
+docker exec 9router-vfh sh -c 'tar -czf - -C /app/data db' > 9router-backup-$(date +%F).tar.gz
 ```
 
-## Publish (automatic via CI)
+## Runtime
 
-Push a Docker-safe semver git tag `vX.Y.Z` (or a prerelease such as `vX.Y.Z-rc.1`) → GitHub Actions builds `linux/amd64` and `linux/arm64` on native runners, health-checks each platform image, verifies the resulting manifest and `/api/health`, then publishes:
+- **Non-root**: PID 1 jalan sebagai `node` (uid 1000). `entrypoint.sh` hanya
+  memperbaiki ownership `/app/data` saat volume baru (root-owned) ter-mount.
+- **DB driver**: `better-sqlite3`. `node:sqlite` baru dipakai di Node ≥24 karena addon
+  native SIGSEGV saat load di sana.
+- **Healthcheck**: `GET /api/health` tiap 30 s, `start-period` 40 s. Didefinisikan di
+  `docker-compose.yml`; image tidak membawa `HEALTHCHECK`.
+- **Limit**: memory 1 GB, reservasi 192 MB. Idle terukur ≈ 114 MB.
+- **Log**: json-file rotasi 10 MB × 3.
 
-- `ghcr.io/decolua/9router:X.Y.Z` + `:latest`
-- `decolua/9router:X.Y.Z` + `:latest`
-
-The `v` prefix is used only for the git tag; image tags omit it. A stable tag push promotes `latest`, but a prerelease tag such as `vX.Y.Z-rc.1` publishes only its numbered image by default. Prereleases require an explicit manual `promote_latest` opt-in. Promotion happens only after both native platform builds, both platform health checks, manifest inspection, and the resolved-manifest smoke test succeed. A failed or timed-out platform build therefore cannot move `latest`.
-
-The workflow rejects SemVer build metadata such as `v1.2.3+build.7` because the `+` form is not a valid Docker image tag. The git tag and both `package.json` versions must match exactly.
+## Operasi
 
 ```bash
-# Use scripts/release.js (recommended)
-node scripts/release.js "Release title" "Notes"
-
-# Or manually
-git tag v0.5.81 && git push origin v0.5.81
+docker compose logs -f            # log
+docker compose restart            # restart
+docker compose down               # stop (volume tetap)
+docker compose down -v            # stop + hapus data  ⚠️
+docker compose up -d --build      # rebuild setelah update kode
 ```
 
-To republish an existing tag, run the `Build and Push Docker Image` workflow manually and provide the exact tag, for example `v0.5.81`, in the `release_tag` input. Manual runs publish the numbered tag but leave `latest` unchanged by default:
+Update versi: naikkan `APP_VERSION` build-arg dan tag image di `docker-compose.yml`,
+lalu `docker compose up -d --build`.
 
-```text
-release_tag:     v0.5.81
-promote_latest:  false
-```
+## Catatan MITM
 
-The `promote_latest` checkbox is an explicit opt-in for changing `latest`. Use it when a deliberate rollback or recovery should make that version the current default:
+MITM (`src/mitm/server.js`) di-spawn sebagai child process dan butuh bind port 443 di
+dalam container. Tanpa `--cap-add=NET_ADMIN` itu tetap jalan untuk mode proxy biasa,
+tapi intercept transparan butuh kapabilitas tambahan. Fitur ini opsional.
 
-```text
-release_tag:     v0.5.75
-promote_latest:  true
-```
+## Build context
 
-Numbered image tags are mutable because a republish can replace their manifest. For a deployment that must be immutable, pin the image digest instead:
+`.dockerignore` memangkas context ke **132 kB** terukur (dari ~16.8 MB file tracked,
+~2 GB termasuk `node_modules` dan `.gitnexus`). Yang dikeluarkan: `.git`, `.gitnexus`,
+`tests`, `cli`, `docs`, `gitbook`, `storage`, `.claude`, `.agents`, `.opencode`, `.vmac`,
+`node_modules`, `.next`, seluruh `*.md` kecuali `README.md`.
 
-```bash
-docker pull decolua/9router@sha256:<verified-digest>
-```
-
-The release workflow runs `/api/health` on each native `amd64` and `arm64` platform image before it uploads the digest artifact or assembles the multi-platform manifest. It then runs a second health check against the resolved version manifest before any requested `latest` promotion.
-
-During recovery, the selected tag remains the application source while the Dockerfile from the workflow revision is used, so an older tag can be rebuilt with the current publishing fixes.
-
-The workflow is tag-driven. Creating a git tag does not automatically create a GitHub Release, so the Releases page and the published package/image tags can be at different versions unless a maintainer creates a release separately.
-
-The upstream repository needs these repository secrets for Docker Hub publishing:
-
-- `DOCKERHUB_USERNAME`
-- `DOCKERHUB_TOKEN`
-
-GHCR publishing uses the workflow's `GITHUB_TOKEN` with package write permission. Forks can publish to their own GHCR namespace, but Docker Hub publication is restricted to the upstream `decolua/9router` repository.
-
-The optional repository variables `ALPINE_MIRROR` and `NPM_REGISTRY` can override the default package mirrors used by the CI Docker build.
-
-Workflow: `.github/workflows/docker-publish.yml`
+Kalau menambah folder besar baru di root repo, tambahkan ke `.dockerignore` juga.

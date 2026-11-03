@@ -1,27 +1,53 @@
 services:
   9router-vfh:
+    build:
+      context: .
+      args:
+        APP_VERSION: "0.5.112"
     image: 9router-vfh:latest
     container_name: 9router-vfh
-    restart: always
+    restart: unless-stopped
+    # Bind to loopback: the gateway holds provider credentials. Put a reverse
+    # proxy in front if it must be reachable from the LAN.
     ports:
-      - "2222:2222"
+      - "127.0.0.1:2222:2222"
     volumes:
       - 9router-vfh-data:/app/data
-    env_file:
-      - .env
     environment:
       DATA_DIR: /app/data
       PORT: "2222"
       HOSTNAME: "0.0.0.0"
       NODE_ENV: production
+      TZ: Asia/Jakarta
       HEADROOM_URL: http://headroom:8787
+    # .env.docker holds JWT_SECRET / INITIAL_PASSWORD / API_KEY_SECRET.
+    # .env in this repo ships placeholders ("change-me") and must not be used.
+    env_file:
+      - .env.docker
     depends_on:
       - headroom
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:2222/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+        reservations:
+          memory: 192m
 
   headroom:
     image: ghcr.io/chopratejas/headroom:latest
     container_name: headroom
-    restart: always
+    restart: unless-stopped
     ports:
       - "127.0.0.1:8787:8787"
 

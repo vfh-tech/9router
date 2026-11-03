@@ -1,32 +1,58 @@
-# VCS
+# VCS / index — the single biggest context bloat
 .git
 **/.git
-
-# Editor
-.vscode
-**/.vscode
+.gitnexus
+.github
 
 # Dependencies and build output
 node_modules
+**/node_modules
 .next
+.next-cli-build
+.next-analyze
 out
 build
 dist
 coverage
 
-# Runtime data and logs
+# Runtime data, logs, generated assets
 data
 logs
+storage
+source
+mcp_memory_bank.db
 
-# Local env files (inject at runtime via --env-file or -e)
+# Local env files (inject at runtime via --env-file or compose env_file)
 .env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+.env.*
+!.env.example
 
-# Debug logs
+# Not needed to build the server image
+tests
+cli
+docs
+gitbook
+i18n
+images
+skills
+scripts/*.md
+
+# Editor / agent working dirs
+.vscode
+.claude
+.opencode
+.vmac
+.agents
+.kiro
+**/*.md
+!README.md
+
+# Misc
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+captain-definition
+run-prod.sh
+DOCKER.md
+agent-view-docs.id.txt
