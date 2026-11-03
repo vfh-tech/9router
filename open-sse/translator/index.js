@@ -7,6 +7,7 @@ import { filterToOpenAIFormat } from "./formats/openai.js";
 import { normalizeThinkingConfig } from "../services/provider.js";
 import { applyThinking, captureThinking } from "./concerns/thinkingUnified.js";
 import { captureSessionId } from "../utils/sessionManager.js";
+import { ensureStreamToolCallIds } from "../utils/streamHelpers.js";
 import { AntigravityExecutor } from "../executors/antigravity.js";
 import { PROVIDERS } from "../providers/index.js";
 import { ROLE, GEMINI_ROLE } from "./schema/roles.js";
@@ -185,14 +186,14 @@ export function translateResponse(targetFormat, sourceFormat, chunk, state) {
   // even when no format conversion is needed, so streamed tool_use blocks must
   // be decloaked here or the client sees an unknown ("_ide"-suffixed) tool.
   if (sourceFormat === targetFormat) {
-    // Fast path: only a content_block_start can carry a cloaked tool name, so
-    // skip the array wrapper for every other chunk and for a cloaked map hit.
-    const toolNameMap = state?.toolNameMap;
-    if (toolNameMap?.size) return [restoreToolNames(decloakStreamChunk(chunk, toolNameMap), toolNameMap)];
-    // No map: decloakStreamChunk still strips a known cloak suffix from tool_use.
-    if (chunk?.type !== "content_block_start") return [chunk];
-    const restored = decloakStreamChunk(chunk, toolNameMap);
-    return restored === chunk ? [chunk] : [restored];
+    // Same-format (openai→openai) passthrough: the upstream chunk reaches the
+    // client as-is. A fragment that opens a new tool-call index without an id
+    // aborts strict OpenAI-compatible clients (#4992) — mint/reuse one first.
+    if (state && chunk && typeof chunk === "object") {
+      if (!state.streamToolCallIds) state.streamToolCallIds = new Map();
+      ensureStreamToolCallIds(chunk, state.streamToolCallIds);
+    }
+    return [restoreToolNames(decloakStreamChunk(chunk, state?.toolNameMap), state?.toolNameMap)];
   }
 
   let results = [chunk];
@@ -263,6 +264,10 @@ export function initState(sourceFormat) {
     inThinkingBlock: false,
     currentBlockIndex: null,
     toolCalls: new Map(),
+    // Tool-call ids already emitted to the client, keyed by tool-call index.
+    // A fragment that opens a NEW index without an id breaks strict
+    // OpenAI-compatible clients (#4992).
+    streamToolCallIds: new Map(),
     finishReason: null,
     finishReasonSent: false,
     usage: null,
