@@ -52,6 +52,28 @@ const STRATEGY_OPTIONS = [
   { value: "fusion", label: "Fusion — panel + judge" },
 ];
 
+// Drop default-valued keys one at a time so setting a combo back to the default
+// strategy does not erase its weights, judge, or fusion tuning. The entry goes
+// only when nothing non-default survives.
+const isEmptyStrategyValue = (value) => {
+  if (value == null) return true;
+  if (typeof value === "string") return value.trim() === "";
+  if (Array.isArray(value)) return value.length === 0;
+  if (typeof value === "object") return Object.keys(value).length === 0;
+  return false;
+};
+
+function pruneStrategyEntry(entry) {
+  const next = { ...entry };
+  if (!next.fallbackStrategy || next.fallbackStrategy === "fallback") {
+    delete next.fallbackStrategy;
+  }
+  if (isEmptyStrategyValue(next.weights)) delete next.weights;
+  if (isEmptyStrategyValue(next.judgeModel)) delete next.judgeModel;
+  if (isEmptyStrategyValue(next.fusionTuning)) delete next.fusionTuning;
+  return Object.keys(next).length > 0 ? next : null;
+}
+
 export default function CombosPage() {
   const [combos, setCombos] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -308,18 +330,15 @@ export default function CombosPage() {
     });
   };
 
-  // Merge a per-combo strategy patch into settings.comboStrategies. Passing an empty
-  // patch (strategy back to default "fallback") drops the entry entirely.
   const handleSetComboStrategy = async (comboName, patch) => {
     try {
       const updated = { ...comboStrategies };
-      const next = { ...(updated[comboName] || {}), ...patch };
-      // Prune to keep settings clean: default fallback with no extras = no entry.
-      if (!next.fallbackStrategy || next.fallbackStrategy === "fallback") {
-        delete updated[comboName];
-      } else {
-        updated[comboName] = next;
-      }
+      const next = pruneStrategyEntry({
+        ...(updated[comboName] || {}),
+        ...patch,
+      });
+      if (next) updated[comboName] = next;
+      else delete updated[comboName];
 
       await persistComboStrategies(updated);
     } catch (error) {
@@ -333,14 +352,13 @@ export default function CombosPage() {
     try {
       const updated = { ...comboStrategies };
       for (const combo of selectedCombos) {
-        if (!strategy || strategy === "fallback") {
-          delete updated[combo.name];
-        } else {
-          updated[combo.name] = {
-            ...(updated[combo.name] || {}),
-            fallbackStrategy: strategy,
-          };
-        }
+        const rest = { ...(updated[combo.name] || {}) };
+        delete rest.fallbackStrategy;
+        const next = pruneStrategyEntry(
+          strategy === "fallback" ? rest : { ...rest, fallbackStrategy: strategy }
+        );
+        if (next) updated[combo.name] = next;
+        else delete updated[combo.name];
       }
       await persistComboStrategies(updated);
     } catch (error) {
@@ -565,9 +583,12 @@ const fmtK = (n) => {
 
 function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], copied, onCopy, onEdit, onDelete, strategy = {}, onSetStrategy, selected = false, onToggleSelect }) {
   const [showJudgeSelect, setShowJudgeSelect] = useState(false);
+  const [showWeights, setShowWeights] = useState(false);
   const current = strategy.fallbackStrategy || "fallback";
   const judge = strategy.judgeModel || "";
+  const weights = strategy.weights || {};
   const isFusion = current === "fusion";
+  const canWeight = current === "round-robin" && combo.models.length > 1;
   // The synced catalog is server-only, so resolving here would fall back to the
   // generic patterns and under-report the limits. getCaps carries the server's
   // answer for /api/models.
@@ -604,6 +625,14 @@ function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], cop
                         ? aggregateComboCapabilities(comboByName[model], comboByName, getCaps)
                         : getCaps?.(model)
                     } />
+                    {typeof weights[model] === "number" && weights[model] !== 1 && (
+                      <span
+                        className="text-[10px] font-semibold text-primary"
+                        title={weights[model] === 0 ? "Fallback only — excluded from rotation" : `Weight ${weights[model]}`}
+                      >
+                        ×{weights[model]}
+                      </span>
+                    )}
                   </code>
                 ))
               )}
@@ -656,6 +685,17 @@ function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], cop
             />
           </div>
 
+          {canWeight && (
+            <button
+              onClick={() => setShowWeights(true)}
+              className="inline-flex items-center justify-center gap-1 rounded-[8px] border border-border px-2 py-1.5 text-xs text-text-muted transition-colors hover:border-primary/40 hover:bg-primary/5 hover:text-primary"
+              title="Set per-model round-robin weights"
+            >
+              <span className="material-symbols-outlined text-[16px]">monitor_weight</span>
+              <span>Weights</span>
+            </button>
+          )}
+
           <div className="grid grid-cols-3 gap-1 sm:flex">
             <button
               onClick={(e) => { e.stopPropagation(); onCopy(combo.name, `combo-${combo.id}`); }}
@@ -687,6 +727,16 @@ function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], cop
         </div>
       </div>
 
+      {showWeights && (
+        <WeightsModal
+          isOpen={showWeights}
+          models={combo.models}
+          weights={weights}
+          onClose={() => setShowWeights(false)}
+          onSave={(next) => { onSetStrategy({ weights: next }); setShowWeights(false); }}
+        />
+      )}
+
       {/* Judge model picker (single-select; combo members make natural judges too) */}
       {showJudgeSelect && (
         <ModelSelectModal
@@ -700,6 +750,71 @@ function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], cop
         />
       )}
     </Card>
+  );
+}
+
+function WeightsModal({ isOpen, models, weights, onClose, onSave }) {
+  const [draft, setDraft] = useState({});
+
+  const valueFor = (model) => (model in draft ? draft[model] : String(weights[model] ?? 1));
+
+  const handleReset = () => setDraft(Object.fromEntries(models.map((m) => [m, "1"])));
+
+  const handleSave = () => {
+    const next = {};
+    for (const model of models) {
+      const parsed = Number.parseInt(valueFor(model), 10);
+      const weight = Number.isFinite(parsed) ? Math.min(1000, Math.max(0, parsed)) : 1;
+      if (weight !== 1) next[model] = weight;
+    }
+    onSave(next);
+    setDraft({});
+  };
+
+  return (
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title="Round-robin weights"
+      size="md"
+      footer={
+        <>
+          <Button variant="ghost" size="sm" onClick={handleReset}>
+            Reset
+          </Button>
+          <Button size="sm" onClick={handleSave}>
+            Save
+          </Button>
+        </>
+      }
+    >
+      <p className="text-xs text-text-muted mb-3">
+        Higher weight wins more turns. <span className="text-text-main font-medium">0</span> removes a model from
+        rotation but keeps it as a last-resort fallback.
+      </p>
+      <div className="flex flex-col gap-2">
+        {models.map((model) => {
+          const value = valueFor(model);
+          return (
+            <div key={model} className="flex items-center gap-3">
+              <code className="min-w-0 flex-1 truncate font-mono text-xs text-text-muted">{model}</code>
+              <input
+                type="number"
+                min={0}
+                max={1000}
+                step={1}
+                className="w-20 rounded-[8px] border border-border bg-surface-2 px-2 py-1 text-right text-xs text-text-main focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+                value={value}
+                onChange={(e) => setDraft((prev) => ({ ...prev, [model]: e.target.value }))}
+              />
+              {Number(value) === 0 && (
+                <span className="shrink-0 text-[10px] font-medium text-amber-500">fallback only</span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </Modal>
   );
 }
 
