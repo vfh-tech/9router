@@ -424,7 +424,7 @@ export default function CombosPage() {
       {strategyError && (
         <div
           role="alert"
-          className="flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-600 dark:text-red-400"
+          className="flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-700 dark:text-red-400"
         >
           <span className="material-symbols-outlined text-[16px]">error</span>
           <span className="min-w-0 flex-1">{strategyError}</span>
@@ -702,6 +702,50 @@ function getRouterModelStatus(routerModel, activeProviders) {
 
   return { ready: false, label: "Not configured", providerId };
 }
+// Weighted models lead, so the three chips shown are the three a reader would
+// ask about. Ties keep their combo order.
+function ModelChips({ models, weights, comboByName, getCaps }) {
+  if (models.length === 0) {
+    return <span className="text-xs text-text-muted italic">No models</span>;
+  }
+  const isTuned = (model) => typeof weights[model] === "number" && weights[model] !== 1;
+  const ordered = [...models.filter(isTuned), ...models.filter((model) => !isTuned(model))];
+  const shown = ordered.slice(0, 3);
+  const hiddenTuned = ordered.slice(3).filter(isTuned).length;
+  const hidden = ordered.length - shown.length;
+
+  return (
+    <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1">
+      {shown.map((model) => (
+        <code key={model} className="inline-flex items-center gap-1 rounded bg-black/5 px-1.5 py-0.5 font-mono text-xs text-text-muted dark:bg-white/5">
+          <span>{model}</span>
+          <CapacityBadges caps={
+            comboByName[model]
+              ? aggregateComboCapabilities(comboByName[model], comboByName, getCaps)
+              : getCaps?.(model)
+          } />
+          {isTuned(model) && (
+            <span
+              className="text-[11px] font-semibold text-brand-700 dark:text-brand-300"
+              aria-label={
+                weights[model] === 0
+                  ? `${model}: fallback only, excluded from rotation`
+                  : `${model}: weight ${weights[model]}`
+              }
+            >
+              {weights[model] === 0 ? "off" : `×${weights[model]}`}
+            </span>
+          )}
+        </code>
+      ))}
+      {hidden > 0 && (
+        <span className="text-[10px] text-text-muted">
+          +{hidden} more{hiddenTuned > 0 ? ` · ${hiddenTuned} weighted` : ""}
+        </span>
+      )}
+    </div>
+  );
+}
 
 function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], copied, onCopy, onEdit, onDelete, strategy = {}, onSetStrategy, selected = false, onToggleSelect }) {
   const [showJudgeSelect, setShowJudgeSelect] = useState(false);
@@ -739,42 +783,17 @@ function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], cop
           </div>
           <div className="min-w-0 flex-1">
             <code className="block truncate font-mono text-sm font-medium">{combo.name}</code>
-            <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1">
-              {combo.models.length === 0 ? (
-                <span className="text-xs text-text-muted italic">No models</span>
-              ) : (
-                combo.models.slice(0, 3).map((model, index) => (
-                  <code key={index} className="inline-flex items-center gap-1 rounded bg-black/5 px-1.5 py-0.5 font-mono text-xs text-text-muted dark:bg-white/5">
-                    <span>{model}</span>
-                    <CapacityBadges caps={
-                      comboByName[model]
-                        ? aggregateComboCapabilities(comboByName[model], comboByName, getCaps)
-                        : getCaps?.(model)
-                    } />
-                    {typeof weights[model] === "number" && weights[model] !== 1 && (
-                      <span
-                        className="text-[10px] font-semibold text-brand-700 dark:text-brand-300"
-                        aria-label={
-                          weights[model] === 0
-                            ? `${model}: fallback only, excluded from rotation`
-                            : `${model}: weight ${weights[model]}`
-                        }
-                      >
-                        ×{weights[model]}
-                      </span>
-                    )}
-                  </code>
-                ))
-              )}
-              {combo.models.length > 3 && (
-                <span className="text-[10px] text-text-muted">+{combo.models.length - 3} more</span>
-              )}
-            </div>
+            <ModelChips
+              models={combo.models}
+              weights={weights}
+              comboByName={comboByName}
+              getCaps={getCaps}
+            />
             {!canWeight && Object.keys(weights).length > 0 && (
               <button
                 type="button"
                 onClick={() => onSetStrategy({ weights: {} })}
-                className="mt-1 inline-flex items-center gap-1 rounded border border-dashed border-border px-1.5 py-0.5 text-[10px] text-text-muted transition-colors hover:border-red-500/40 hover:text-red-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 dark:hover:text-red-400"
+                className="mt-1 inline-flex items-center gap-1 rounded border border-dashed border-border px-2 py-1 text-[11px] text-text-muted transition-colors hover:border-red-500/40 hover:text-red-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 dark:hover:text-red-400 dark:focus-visible:ring-brand-300"
                 title="These weights stay stored for round-robin. Clear them."
               >
                 <span className="material-symbols-outlined text-[12px]">monitor_weight</span>
@@ -872,6 +891,7 @@ function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], cop
               value={current}
               onChange={(e) => onSetStrategy({ fallbackStrategy: e.target.value })}
               selectClassName="py-1.5 text-xs"
+              aria-label={`Routing strategy for ${combo.name}`}
             />
           </div>
 
@@ -978,6 +998,28 @@ function parseWeight(raw) {
   return Number.isFinite(parsed) ? Math.min(MAX_WEIGHT, Math.max(0, parsed)) : 1;
 }
 
+// Largest-remainder rounding: independent Math.round per row can total 99 or
+// 101 (5/3/2/1 renders as 45/27/18/9), which makes the share column look wrong
+// exactly where it is meant to be the guarantee. Floor first, then hand the
+// leftover points to the rows with the largest remainders, so the column sums
+// to 100 whenever any weight is positive.
+function sharesFor(weights) {
+  const total = weights.reduce((sum, weight) => sum + weight, 0);
+  if (total <= 0) return weights.map(() => 0);
+  const exact = weights.map((weight) => (weight / total) * 100);
+  const floored = exact.map((value) => Math.floor(value));
+  let leftover = 100 - floored.reduce((sum, value) => sum + value, 0);
+  const order = exact
+    .map((value, index) => ({ index, remainder: value - floored[index] }))
+    .sort((a, b) => b.remainder - a.remainder);
+  const shares = [...floored];
+  for (const { index } of order) {
+    if (leftover <= 0) break;
+    shares[index] += 1;
+    leftover -= 1;
+  }
+  return shares;
+}
 function WeightsModal({ isOpen, models, weights, onClose, onSave }) {
   const [draft, setDraft] = useState({});
   const [saving, setSaving] = useState(false);
@@ -987,7 +1029,7 @@ function WeightsModal({ isOpen, models, weights, onClose, onSave }) {
 
   const parsed = models.map((model) => [model, parseWeight(valueFor(model))]);
   const total = parsed.reduce((sum, [, weight]) => sum + weight, 0);
-  const shareFor = (weight) => (total > 0 && weight > 0 ? Math.round((weight / total) * 100) : 0);
+  const shares = sharesFor(parsed.map(([, weight]) => weight));
 
   const handleClose = () => {
     setDraft({});
@@ -1048,8 +1090,9 @@ function WeightsModal({ isOpen, models, weights, onClose, onSave }) {
         </p>
       )}
       <div className="flex flex-col gap-2">
-        {models.map((model) => {
-          const weight = parseWeight(valueFor(model));
+        {models.map((model, index) => {
+          const weight = parsed[index][1];
+          const share = shares[index];
           return (
             <div key={model} className="flex items-center gap-3">
               <code className="min-w-0 flex-1 truncate font-mono text-xs text-text-muted" title={model}>
@@ -1062,24 +1105,31 @@ function WeightsModal({ isOpen, models, weights, onClose, onSave }) {
                 step={1}
                 aria-label={`Weight for ${model}`}
                 aria-describedby="weights-help"
-                className="w-20 rounded-[8px] border border-border bg-surface-2 px-2 py-1 text-right text-xs text-text-main focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40"
+                className="w-20 rounded-[8px] border border-border bg-surface-2 px-2 py-1 text-right text-xs text-text-main focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 dark:focus-visible:ring-brand-300"
                 value={valueFor(model)}
                 onChange={(e) => setDraft((prev) => ({ ...prev, [model]: e.target.value }))}
+                onBlur={(e) => setDraft((prev) => ({ ...prev, [model]: String(parseWeight(e.target.value)) }))}
               />
-              <span className="w-16 shrink-0 text-right text-[10px] tabular-nums text-text-muted">
+              <span className="w-16 shrink-0 text-right text-[11px] tabular-nums text-text-muted">
                 {weight === 0 ? (
                   <span className="font-medium text-amber-700 dark:text-amber-400">fallback</span>
+                ) : share < 1 ? (
+                  "<1%"
                 ) : (
-                  `${shareFor(weight)}%`
+                  `${share}%`
                 )}
               </span>
             </div>
           );
         })}
       </div>
-      <p id="weights-help" className="mt-3 text-[11px] text-text-muted">
-        Requests rotate by these shares in a fixed smooth cycle, not at random. Total weight {total}.
+      <p aria-live="polite" className="mt-3 text-[11px] text-text-muted">
+        <span id="weights-help">
+          Requests rotate by these shares in a fixed smooth cycle, not at random.
+        </span>{" "}
+        Total weight {total}.
       </p>
+
     </Modal>
   );
 }
