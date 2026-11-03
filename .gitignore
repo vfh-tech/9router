@@ -102,3 +102,20 @@ graphify-out/*
 start-dev-silent.cjs
 debug.log
 .scratch/
+
+# Local agent tooling (skills copies, goal state, memory bank)
+.agents/
+.opencode/
+.vmac/
+skills-lock.json
+mcp_memory_bank.db*
+agent-view-docs.id.txt
+
+# pstack skill symlinks point into .agents/skills; only upstream's own
+# 9router-* skills and README ship from this repo.
+skills/*
+!skills/9router*/
+!skills/README.md
+
+# Generated runtime assets
+storage/
