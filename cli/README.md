@@ -95,8 +95,8 @@ That's it! Start coding with FREE AI models.
 Already running 9Router on another machine (e.g. a team server on your LAN)? Point this machine's CLI tools at it — no local server is started:
 
 ```bash
-npx 9router connect http://<server-host>:20128                       # pick tools interactively
-npx 9router connect http://<server-host>:20128 --tools claude,codex  # or choose up front
+npx 9router connect http://<server-host>:2222                       # pick tools interactively
+npx 9router connect http://<server-host>:2222 --tools claude,codex  # or choose up front
 npx 9router connect --reset --tools claude,codex                     # undo
 ```
 
@@ -119,25 +119,25 @@ Models come from the **server's own CLI-tools configuration**, so a client gets 
 
 ```bash
 # One Claude tier; the other tiers still come from the server
-npx 9router connect http://<server-host>:20128 --tools claude --sonnet cc/claude-sonnet-5-5
+npx 9router connect http://<server-host>:2222 --tools claude --sonnet cc/claude-sonnet-5-5
 
 # Every Claude tier
-npx 9router connect http://<server-host>:20128 --tools claude \
+npx 9router connect http://<server-host>:2222 --tools claude \
   --fable cc/claude-fable-5-1 --opus cc/claude-opus-5-5 \
   --sonnet cc/claude-sonnet-5-5 --haiku cc/claude-haiku-4-5-20251001
 
 # All non-Claude tools at once
-npx 9router connect http://<server-host>:20128 --tools codex,opencode,kilo --model ocg/deepseek-flash
+npx 9router connect http://<server-host>:2222 --tools codex,opencode,kilo --model ocg/deepseek-flash
 
 # Claude and other tools in one run
-npx 9router connect http://<server-host>:20128 --tools claude,codex --opus cc/claude-opus-5-5 --model gpt-6
+npx 9router connect http://<server-host>:2222 --tools claude,codex --opus cc/claude-opus-5-5 --model gpt-6
 
 # A different model per tool: --model covers every non-Claude tool in a run, so run once per tool
-npx 9router connect http://<server-host>:20128 --tools codex --model gpt-6
-npx 9router connect http://<server-host>:20128 --tools opencode --model ocg/glm-5.3
+npx 9router connect http://<server-host>:2222 --tools codex --model gpt-6
+npx 9router connect http://<server-host>:2222 --tools opencode --model ocg/glm-5.3
 ```
 
-A model the server doesn't list is still written, with a `not listed by server` warning. To see the ids it serves: `curl http://<server-host>:20128/v1/models -H "Authorization: Bearer <your key>"`.
+A model the server doesn't list is still written, with a `not listed by server` warning. To see the ids it serves: `curl http://<server-host>:2222/v1/models -H "Authorization: Bearer <your key>"`.
 
 ### Checking the current config
 
@@ -153,7 +153,7 @@ npx 9router show claude --json   # machine-readable (key still masked)
 ```
 ✅ Claude Code
    File:     ~/.claude/settings.json
-   Base URL: http://<server-host>:20128/v1
+   Base URL: http://<server-host>:2222/v1
    API key:  sk-a1b…9f3c
    Models:
      fable   cc/claude-fable-5-1

@@ -169,7 +169,7 @@ Options:
 
 Commands:
   connect <server-url> Configure Claude Code for a remote 9router server
-                      (npx 9router connect http://host:20128 — no install needed)
+                      (npx 9router connect http://host:2222 — no install needed)
   show [tool…]        Show each CLI tool's current 9router config and models
                       (e.g. 9router show claude)
   xai video --prompt "..." --output video.mp4
