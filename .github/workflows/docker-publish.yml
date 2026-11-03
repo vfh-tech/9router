@@ -207,11 +207,11 @@ jobs:
           docker run --detach \
             --name "$container" \
             --platform "$PLATFORM" \
-            --publish 20128:20128 \
+            --publish 2222:2222 \
             "${GHCR_IMAGE}@${IMAGE_DIGEST}"
 
           for attempt in {1..45}; do
-            if curl --fail --silent --show-error http://127.0.0.1:20128/api/health; then
+            if curl --fail --silent --show-error http://127.0.0.1:2222/api/health; then
               echo "${PLATFORM} health check passed"
               exit 0
             fi
@@ -323,11 +323,11 @@ jobs:
           docker run --detach \
             --name "$container" \
             --platform linux/amd64 \
-            --publish 20128:20128 \
+            --publish 2222:2222 \
             "${GHCR_IMAGE}:${VERSION}"
 
           for attempt in {1..30}; do
-            if curl --fail --silent --show-error http://127.0.0.1:20128/api/health; then
+            if curl --fail --silent --show-error http://127.0.0.1:2222/api/health; then
               echo "Resolved version manifest health check passed"
               exit 0
             fi
