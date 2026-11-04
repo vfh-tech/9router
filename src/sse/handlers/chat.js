@@ -153,6 +153,7 @@ export async function handleChat(request, clientRawRequest = null) {
       comboStrategy,
       comboStickyLimit,
       comboWeights,
+      comboModels,
       sessionId,
       smartPolicy: comboCfg.smartPolicy || "smart",
       sessionSticky: comboCfg.sessionSticky !== false,
@@ -165,7 +166,6 @@ export async function handleChat(request, clientRawRequest = null) {
             log,
           })
         : null,
-      comboWeights
     });
   }
 
@@ -251,6 +251,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         comboStrategy,
         comboStickyLimit,
         comboWeights,
+        comboModels,
         sessionId: nestedSessionId,
         smartPolicy: comboCfg.smartPolicy || "smart",
         sessionSticky: comboCfg.sessionSticky !== false,
@@ -263,7 +264,6 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
               log,
             })
           : null,
-        comboWeights
       });
     }
     log.warn("CHAT", "Invalid model format", { model: modelStr });
