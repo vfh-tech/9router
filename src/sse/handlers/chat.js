@@ -165,6 +165,7 @@ export async function handleChat(request, clientRawRequest = null) {
             log,
           })
         : null,
+      comboWeights
     });
   }
 
@@ -262,6 +263,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
               log,
             })
           : null,
+        comboWeights
       });
     }
     log.warn("CHAT", "Invalid model format", { model: modelStr });

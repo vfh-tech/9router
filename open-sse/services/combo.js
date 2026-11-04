@@ -105,8 +105,11 @@ export function reorderByCapabilities(models, required) {
 }
 
 /**
- * Track rotation state per combo (for round-robin strategy)
- * @type {Map<string, { index: number, consecutiveUseCount: number }>}
+ * Rotation state per combo. Two shapes share this map: the unweighted path
+ * stores `{ index, consecutiveUseCount }`, the weighted path stores
+ * `{ sig, current, lastSeat, consecutiveUseCount }`. Each reader validates the
+ * shape it expects before using it.
+ * @type {Map<string, Object>}
  */
 const comboRotationState = new Map();
 
@@ -233,30 +236,6 @@ export function getComboWeights(comboStrategies, comboName) {
   return comboStrategies?.[comboName]?.weights || null;
 }
 
-export function buildWeightedCycle(models, weights) {
-  const seats = models.filter((m) => weights[m] > 0);
-  if (seats.length === 0) return [];
-  const total = seats.reduce((sum, m) => sum + weights[m], 0);
-  const score = seats.map(() => 0);
-  const cycle = [];
-  for (let tick = 0; tick < total; tick++) {
-    cycle.push(seats[smoothTick(seats, weights, score, total)]);
-  }
-  return cycle;
-}
-
-// One tick of smooth weighted round-robin: raise every seat by its weight, take
-// the highest, then debit the total so the next winner is a different seat.
-function smoothTick(seats, weights, score, total) {
-  let head = 0;
-  for (let i = 0; i < seats.length; i++) {
-    score[i] += weights[seats[i]];
-    if (score[i] > score[head]) head = i;
-  }
-  score[head] -= total;
-  return head;
-}
-
 function rotateModelsFromIndex(models, currentIndex) {
   const rotatedModels = [...models];
   for (let i = 0; i < currentIndex; i++) {
@@ -281,15 +260,17 @@ export function getRotatedModels(models, comboName, strategy, stickyLimit = 1, c
 
   const weights = normalizeComboWeights(models, comboWeights);
   if (weights) {
-    return advanceWeightedRotation(models, comboName, weights, normalizeStickyLimit(stickyLimit));
+    return advanceWeightedRotation(models, comboName, weights, normalizeStickyLimit(stickyLimit), comboWeights);
   }
 
   const rotationKey = comboName || "__default__";
   const normalizedStickyLimit = normalizeStickyLimit(stickyLimit);
   const existingState = comboRotationState.get(rotationKey);
+  // The weighted branch stores an object keyed by signature. Reading that as a
+  // positional index yields NaN, which freezes the list on one model forever.
   const state = typeof existingState === "number"
     ? { index: existingState, consecutiveUseCount: 0 }
-    : (existingState || { index: 0, consecutiveUseCount: 0 });
+    : (existingState && Number.isInteger(existingState.index) ? existingState : { index: 0, consecutiveUseCount: 0 });
 
   const currentIndex = state.index % models.length;
   const rotatedModels = rotateModelsFromIndex(models, currentIndex);
@@ -310,31 +291,30 @@ export function getRotatedModels(models, comboName, strategy, stickyLimit = 1, c
   return rotatedModels;
 }
 
-function advanceWeightedRotation(models, comboName, weights, stickyLimit) {
+function advanceWeightedRotation(models, comboName, weights, stickyLimit, configuredWeights) {
   const rotationKey = comboName || "__default__";
-  const sig = models.join("|") + "::" + models.map((m) => weights[m]).join(",");
+  // Seats are models with a positive weight that the user actually configured.
+  // The capacity adapter prepends its own models per request, and leaving them
+  // out of the signature and the accumulator stops the cycle from restarting.
+  const configured = configuredWeights && typeof configuredWeights === "object" ? configuredWeights : null;
+  const seats = models.filter((m) => weights[m] > 0 && (!configured || Object.prototype.hasOwnProperty.call(configured, m)));
+  const sig = seats.join("|") + "::" + seats.map((m) => weights[m]).join(",");
   const existing = comboRotationState.get(rotationKey);
-  const usable = existing && typeof existing === "object" && existing.sig === sig && Array.isArray(existing.current);
+  const usable = existing && typeof existing === "object" && existing.sig === sig && existing.current && !Array.isArray(existing.current);
 
-  const state = usable
-    ? existing
-    : { sig, current: models.map(() => 0), lastSeat: -1, consecutiveUseCount: 0 };
-
-  const positive = [];
-  for (let i = 0; i < models.length; i++) {
-    if (weights[models[i]] > 0) positive.push(i);
-  }
-  const seats = positive.map((i) => models[i]);
+  // Keyed by model name, because the adapter shifts both list length and offset.
+  const state = usable ? existing : { sig, current: {}, lastSeat: null, consecutiveUseCount: 0 };
   const total = seats.reduce((sum, m) => sum + weights[m], 0);
 
   let head;
-  if (state.lastSeat >= 0 && state.consecutiveUseCount < stickyLimit && positive.includes(state.lastSeat)) {
+  if (state.lastSeat && state.consecutiveUseCount < stickyLimit && seats.includes(state.lastSeat)) {
     head = state.lastSeat;
     state.consecutiveUseCount += 1;
   } else {
-    const score = positive.map((i) => state.current[i]);
-    head = positive[smoothTick(seats, weights, score, total)];
-    for (let k = 0; k < positive.length; k++) state.current[positive[k]] = score[k];
+    for (const m of seats) state.current[m] = (state.current[m] || 0) + weights[m];
+    head = seats[0];
+    for (const m of seats) if (state.current[m] > state.current[head]) head = m;
+    state.current[head] -= total;
     state.lastSeat = head;
     state.consecutiveUseCount = 1;
   }
@@ -344,18 +324,16 @@ function advanceWeightedRotation(models, comboName, weights, stickyLimit) {
 }
 
 function orderSeatsByWeights(models, weights, current, head) {
-  const ranked = [];
-  const excluded = [];
-  for (let i = 0; i < models.length; i++) {
-    if (weights[models[i]] > 0) ranked.push(i); else excluded.push(i);
-  }
+  const score = (m) => (current[m] || 0) + weights[m];
+  const ranked = models.filter((m) => weights[m] > 0);
+  const excluded = models.filter((m) => !(weights[m] > 0));
   ranked.sort((a, b) => {
     if (a === head) return b === head ? 0 : -1;
     if (b === head) return 1;
-    const diff = (current[b] + weights[models[b]]) - (current[a] + weights[models[a]]);
-    return diff || a - b;
+    const diff = score(b) - score(a);
+    return diff || models.indexOf(a) - models.indexOf(b);
   });
-  return [...ranked, ...excluded].map((i) => models[i]);
+  return [...ranked, ...excluded];
 }
 
 /**

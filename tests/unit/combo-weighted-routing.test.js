@@ -4,7 +4,6 @@ import {
   getRotatedModels,
   resetComboRotation,
   normalizeComboWeights,
-  buildWeightedCycle,
 } from "../../open-sse/services/combo.js";
 
 const MODELS = ["p/a", "p/b", "p/c"];
@@ -108,17 +107,6 @@ describe("combo weighted round-robin", () => {
     expect(heads).toEqual(["p/a", "p/a", "p/b", "p/b", "p/c", "p/c", "p/a", "p/a"]);
   });
 
-  it("buildWeightedCycle emits one entry per weight unit", () => {
-    const weights = { "p/a": 5, "p/b": 3, "p/c": 1 };
-    const cycle = buildWeightedCycle(MODELS, weights);
-    const counts = {};
-    for (const seat of cycle) counts[seat] = (counts[seat] || 0) + 1;
-
-    expect(cycle).toHaveLength(9);
-    expect(counts).toEqual({ "p/a": 5, "p/b": 3, "p/c": 1 });
-    expect(buildWeightedCycle(MODELS, { "p/a": 0, "p/b": 0, "p/c": 0 })).toEqual([]);
-  });
-
   it("resets cleanly when the weights change mid-flight", () => {
     const before = { "p/a": 5, "p/b": 3, "p/c": 1 };
     for (let i = 0; i < 3; i++) {
@@ -147,5 +135,31 @@ describe("combo weighted round-robin", () => {
       "p/b": 1,
       "p/c": 1,
     });
+  });
+
+  it("keeps its cycle when a capacity adapter prepends a model", () => {
+    const weights = { "p/a": 5, "p/b": 3, "p/c": 2 };
+    const withAdapter = ["p/vision", ...MODELS];
+    const heads = Array.from({ length: 20 }, (_, i) =>
+      getRotatedModels(i % 2 ? MODELS : withAdapter, "adapted", "round-robin", 1, weights)[0]
+    );
+    const counts = {};
+    for (const head of heads) counts[head] = (counts[head] || 0) + 1;
+
+    expect(counts).toEqual({ "p/a": 10, "p/b": 6, "p/c": 4 });
+    expect(heads.slice(0, 3)).toEqual(["p/a", "p/b", "p/c"]);
+  });
+
+  it("rotates after a weighted cycle ends without an explicit reset", () => {
+    const weights = { "p/a": 5, "p/b": 3, "p/c": 2 };
+    for (let i = 0; i < 3; i++) {
+      getRotatedModels(MODELS, "handoff", "round-robin", 1, weights);
+    }
+
+    const heads = Array.from({ length: 6 }, () =>
+      getRotatedModels(MODELS, "handoff", "round-robin", 1, null)[0]
+    );
+
+    expect(new Set(heads).size).toBeGreaterThan(1);
   });
 });
